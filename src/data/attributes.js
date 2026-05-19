@@ -1,0 +1,37 @@
+export const ATTRS = {
+  rest: { g: 'F', n: 'Rest', d: 'Sleep 2s, regain 8% HP', e: 0 },
+  charge: { g: 'F', n: 'Charge', d: '+10% speed for 3s', e: 5 },
+  thorn: { g: 'F', n: 'Thorn', d: '+5% damage next hit, -3% HP', e: 3 },
+  spark: { g: 'F', n: 'Spark', d: 'Zap target for 8 damage', e: 4 },
+  trouble: { g: 'E', n: 'Trouble', d: 'Dash left', e: 8 },
+  fold: { g: 'E', n: 'Fold', d: 'Dash right', e: 8 },
+  trip: { g: 'E', n: 'Trip', d: 'Dash backward', e: 8 },
+  click: { g: 'E', n: 'Click', d: 'Dash forward', e: 8 },
+  roll: { g: 'E', n: 'Roll', d: 'Long dodge with 1s invuln', e: 12 },
+  confuse: { g: 'D', n: 'Confuse', d: 'Stun target 3s', e: 15 },
+  direct: { g: 'D', n: 'Direct', d: 'Next attack cannot miss', e: 10 },
+  fuse: { g: 'D', n: 'Fuse', d: 'Drop bomb, explodes in 3s', e: 18 },
+  smoke: { g: 'D', n: 'Smoke', d: 'Brief blind 1.5s', e: 12 },
+  heal: { g: 'C', n: 'Heal', d: 'Restore 15% max HP', e: 20 },
+  manamore: { g: 'C', n: 'Manamore', d: '+30% mana, -30% energy', e: 0 },
+  barrier: { g: 'C', n: 'Barrier', d: 'Block next 80 damage', e: 18 },
+  surge: { g: 'C', n: 'Surge', d: 'Restore 25% energy', e: 0 },
+  dust: { g: 'B', n: 'Dust', d: 'Blind target 4s', e: 22 },
+  steal: { g: 'B', n: 'Steal', d: 'Steal an item (all energy)', e: 999 },
+  sky: { g: 'B', n: 'Sky', d: 'Jump, evade all 4s', e: 25 },
+  rage: { g: 'B', n: 'Rage', d: '+30% damage 5s', e: 25 },
+  boost: { g: 'A', n: 'Boost', d: '+20% damage 3s', e: 30 },
+  reflect: { g: 'A', n: 'Reflect', d: 'Reflect next attack', e: 30 },
+  recycle: { g: 'A', n: 'Recycle', d: 'Next skill: half energy', e: 15 },
+  pressure: { g: 'A', n: 'Pressure', d: 'Slow all -70% for 4s', e: 35 },
+  lifesteal: { g: 'A', n: 'LifeSteal', d: 'Drain 20% target HP', e: 35 },
+  clone: { g: 'A', n: 'Clone', d: 'Decoy for 6s', e: 30 },
+  control: { g: 'S', n: 'Control', d: 'Take over enemy 4s', e: 50 },
+  replenish: { g: 'S', n: 'Replenish', d: 'Full HP and mana', e: 0 },
+  slash: { g: 'S', n: 'Slash', d: 'Kill target (all energy)', e: 999 },
+  timestop: { g: 'S', n: 'TimeStop', d: 'Freeze all 4s', e: 60 },
+};
+
+export const ATTRS_BY_GRADE = Object.entries(ATTRS).reduce((a, [k, v]) => {
+  (a[v.g] ||= []).push(k); return a;
+}, {});
