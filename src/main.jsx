@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import ReactDOM from 'react-dom/client';
 
 import { ATTRS, ATTRS_BY_GRADE } from './data/attributes.js';
@@ -12,7 +12,7 @@ import { ZONES } from './data/zones.js';
 
 import { AudioMgr } from './engine/audio.js';
 import { StorageMgr } from './engine/storage.js';
-import { generateFloor, updateHazards, themeForFloor } from './engine/floor-gen.js';
+import { generateFloor, updateHazards, updateFog, themeForFloor } from './engine/floor-gen.js';
 import {
   rand, pick, clamp,
   rollCharacterAttrs, rollCharacterAffinities, pickAttrByGrade,
@@ -47,13 +47,15 @@ function KrezcentQuest() {
   const [char, setChar] = useState(null);
   const [msg, setMsg] = useState('');
   const [modal, setModal] = useState(null);
-  const [, setTick] = useState(0);
   const [shopTab, setShopTab] = useState('buy');
   const [pvpOpp, setPvpOpp] = useState(null);
   const [loadoutTab, setLoadoutTab] = useState('abilities');
-  const [boxSpin, setBoxSpin] = useState(null); // { boxKey, phase, result }
+  const [boxSpin, setBoxSpin] = useState(null);
   const [trainerGrade, setTrainerGrade] = useState('F');
   const [vp, setVp] = useState({ w: typeof window !== 'undefined' ? window.innerWidth : 1024, h: typeof window !== 'undefined' ? window.innerHeight : 768 });
+
+  // Lightweight tick state for HUD only — modals don't subscribe to this
+  const [hudTick, setHudTick] = useState(0);
 
   const world = useRef({
     zone: null, floor: 1,
@@ -99,8 +101,8 @@ function KrezcentQuest() {
       if (screenRef.current === 'world' && !modalRef.current) {
         if (e.key === ' ') { e.preventDefault(); tryInteract(); }
         if (key === 'j') doBasicAttack();
-        if (['1', '2', '3', '4', '5', '6', '7'].includes(e.key)) useAttribute(parseInt(e.key) - 1);
-        if (['q', 'e', 'r', 'f', 'g'].includes(key)) useAffinitySlot(key);
+        if (['1','2','3','4','5','6','7'].includes(e.key)) useAttribute(parseInt(e.key) - 1);
+        if (['q','e','r','f','g'].includes(key)) useAffinitySlot(key);
       }
     };
     const ku = (e) => { world.current.keys[e.key.toLowerCase()] = false; };
@@ -109,6 +111,7 @@ function KrezcentQuest() {
     return () => { window.removeEventListener('keydown', kd); window.removeEventListener('keyup', ku); };
   }, []);
 
+  // Game loop — no longer triggers React re-renders for modals
   useEffect(() => {
     if (screen !== 'world') return;
     let raf;
@@ -124,9 +127,12 @@ function KrezcentQuest() {
     return () => cancelAnimationFrame(raf);
   }, [screen]);
 
+  // HUD updates at 4fps (just for HP bars, status icons) — does NOT cause modal scroll resets
   useEffect(() => {
     if (screen !== 'world') return;
-    const i = setInterval(() => setTick(t => t + 1), 100);
+    const i = setInterval(() => {
+      if (!modalRef.current) setHudTick(t => (t + 1) % 1000);
+    }, 250);
     return () => clearInterval(i);
   }, [screen]);
 
@@ -150,8 +156,6 @@ function KrezcentQuest() {
     if (p.blind > 0) p.blind -= dt;
     if (p.slow > 0) p.slow -= dt;
     for (const k of Object.keys(p.buffs)) { p.buffs[k] -= dt; if (p.buffs[k] <= 0) delete p.buffs[k]; }
-
-    // Status effects on the player (DoT / debuffs)
     tickPlayerStatuses(c, dt);
 
     let moving = false;
@@ -182,8 +186,11 @@ function KrezcentQuest() {
     p.tileX = Math.floor(p.x / 40);
     p.tileY = Math.floor(p.y / 40);
 
-    // Hazards (traps, lightning, fire vents, etc.)
     if (w.maze) {
+      // Fog of war
+      updateFog(w.maze, p.tileX, p.tileY, 5);
+
+      // Hazards
       const events = updateHazards(w.maze, dt, p.tileX, p.tileY, p.x, p.y);
       for (const ev of events) {
         if (ev.kind === 'spike') damagePlayer(ev.dmg, null);
@@ -194,7 +201,7 @@ function KrezcentQuest() {
           addFloat(p.x, p.y - 30, '+heal', '#69f0ae');
         }
       }
-      // Spawn arrow projectiles for newly-triggered arrow traps
+      // Spawn arrow projectiles
       for (const h of w.maze.hazards) {
         if (h.kind === 'arrow' && h.fireNow) {
           h.fireNow = false;
@@ -209,6 +216,7 @@ function KrezcentQuest() {
       }
     }
 
+    // Projectiles
     w.projectiles = w.projectiles.filter(pr => {
       pr.x += pr.vx * dt;
       pr.y += pr.vy * dt;
@@ -225,8 +233,7 @@ function KrezcentQuest() {
           }
         }
         if (!w.maze.boss.defeated && w.maze.bossHp != null) {
-          const bx = w.maze.bossX * 40 + 20, by = w.maze.bossY * 40 + 20;
-          if (Math.hypot(pr.x - bx, pr.y - by) < 35) {
+          if (Math.hypot(pr.x - w.maze.bossPx, pr.y - w.maze.bossPy) < 35) {
             damageBoss(pr.dmg, pr.aff);
             return false;
           }
@@ -240,6 +247,7 @@ function KrezcentQuest() {
       }
       return true;
     });
+
     w.effects = w.effects.filter(ef => {
       ef.life -= dt;
       if (ef.delay !== undefined) {
@@ -253,8 +261,7 @@ function KrezcentQuest() {
               if (Math.hypot(ef.x - mx, ef.y - my) < ef.radius) damageMonster(m, ef.dmg, ef.aff);
             }
             if (!w.maze.boss.defeated && w.maze.bossHp != null) {
-              const bx = w.maze.bossX * 40 + 20, by = w.maze.bossY * 40 + 20;
-              if (Math.hypot(ef.x - bx, ef.y - by) < ef.radius + 20) damageBoss(ef.dmg, ef.aff);
+              if (Math.hypot(ef.x - w.maze.bossPx, ef.y - w.maze.bossPy) < ef.radius + 20) damageBoss(ef.dmg, ef.aff);
             }
           } else if (!ef.fromPlayer) {
             if (Math.hypot(ef.x - p.x, ef.y - p.y) < ef.radius && p.invuln <= 0 && p.sky <= 0) damagePlayer(ef.dmg, ef.aff);
@@ -282,10 +289,8 @@ function KrezcentQuest() {
         const mx = m.x * 40 + 20, my = m.y * 40 + 20;
         const distToPlayer = Math.hypot(p.x - mx, p.y - my);
         const range = t.ranged ? 260 : 280;
-
         m.animTime += dt;
 
-        // Resolve telegraphed lunge — damage actually lands at lunge=0
         if (m.lunge > 0) {
           m.lunge -= dt;
           if (m.lunge <= 0 && m.lungeTarget) {
@@ -301,7 +306,6 @@ function KrezcentQuest() {
         }
 
         if (distToPlayer < range && p.sky <= 0) {
-          // Move toward player
           const dxn = (p.x - mx) / distToPlayer, dyn = (p.y - my) / distToPlayer;
           let spd = t.spd * 60;
           if (m.slow > 0) spd *= 0.4;
@@ -322,7 +326,6 @@ function KrezcentQuest() {
                 onHitStatus: t.attack,
               });
             } else if (distToPlayer < 60) {
-              // Telegraph a lunge — damage lands 0.35s later
               m.lunge = 0.35;
               m.lungeTarget = { x: p.x, y: p.y };
             }
@@ -330,29 +333,23 @@ function KrezcentQuest() {
         }
       }
 
-      // Boss
       if (w.maze.boss && !w.maze.boss.defeated) {
         if (w.maze.bossHp == null) initBoss(w);
         updateBoss(w, c, p, dt);
       }
     }
+
     w.floats = w.floats.map(f => ({ ...f, life: f.life - dt, y: f.y - dt * 30 })).filter(f => f.life > 0);
     updateInteractPrompt();
     checkZoneTransitions();
   }
 
-  // ===== Status helpers =====
-  function hasStatus(c, kind) {
-    return (c.statusEffects || []).some(s => s.kind === kind);
-  }
+  function hasStatus(c, kind) { return (c.statusEffects || []).some(s => s.kind === kind); }
   function addStatus(c, status) {
     c.statusEffects = c.statusEffects || [];
-    // Refresh existing of same kind, else push new
     const existing = c.statusEffects.find(s => s.kind === status.kind);
-    if (existing) {
-      existing.dur = Math.max(existing.dur, status.dur);
-      Object.assign(existing, status);
-    } else c.statusEffects.push({ ...status });
+    if (existing) { existing.dur = Math.max(existing.dur, status.dur); Object.assign(existing, status); }
+    else c.statusEffects.push({ ...status });
   }
   function tickPlayerStatuses(c, dt) {
     if (!c.statusEffects) return;
@@ -376,27 +373,13 @@ function KrezcentQuest() {
     if (!attack || attack.kind === 'normal') return;
     const p = world.current.player;
     switch (attack.kind) {
-      case 'freeze':
-        addStatus(c, { kind: 'freeze', dur: attack.dur || 2, slow: attack.slow || 0.5 });
-        addFloat(p.x, p.y - 40, 'FROZEN', '#80deea'); break;
-      case 'burn':
-        addStatus(c, { kind: 'burn', dur: attack.dur || 3, dps: attack.dps || 8 });
-        addFloat(p.x, p.y - 40, 'BURNING', '#ff7043'); break;
-      case 'poison':
-        addStatus(c, { kind: 'poison', dur: attack.dur || 4, dps: attack.dps || 6 });
-        addFloat(p.x, p.y - 40, 'POISONED', '#9ccc65'); break;
-      case 'blind':
-        p.blind = Math.max(p.blind, attack.dur || 3);
-        addFloat(p.x, p.y - 40, 'BLINDED', '#212121'); break;
-      case 'shock':
-        p.stun = Math.max(p.stun, attack.stun || 0.6);
-        addFloat(p.x, p.y - 40, 'SHOCKED', '#fff176'); break;
-      case 'curse':
-        addStatus(c, { kind: 'curse', dur: attack.dur || 4, manaPenalty: attack.manaPenalty || 0.5 });
-        addFloat(p.x, p.y - 40, 'CURSED', '#9c27b0'); break;
-      case 'drain':
-        // Pre-applied damage is the steal; effect just shows label
-        addFloat(p.x, p.y - 40, 'DRAINED', '#e91e63'); break;
+      case 'freeze': addStatus(c, { kind: 'freeze', dur: attack.dur || 2, slow: attack.slow || 0.5 }); addFloat(p.x, p.y - 40, 'FROZEN', '#80deea'); break;
+      case 'burn': addStatus(c, { kind: 'burn', dur: attack.dur || 3, dps: attack.dps || 8 }); addFloat(p.x, p.y - 40, 'BURNING', '#ff7043'); break;
+      case 'poison': addStatus(c, { kind: 'poison', dur: attack.dur || 4, dps: attack.dps || 6 }); addFloat(p.x, p.y - 40, 'POISONED', '#9ccc65'); break;
+      case 'blind': p.blind = Math.max(p.blind, attack.dur || 3); addFloat(p.x, p.y - 40, 'BLINDED', '#212121'); break;
+      case 'shock': p.stun = Math.max(p.stun, attack.stun || 0.6); addFloat(p.x, p.y - 40, 'SHOCKED', '#fff176'); break;
+      case 'curse': addStatus(c, { kind: 'curse', dur: attack.dur || 4, manaPenalty: attack.manaPenalty || 0.5 }); addFloat(p.x, p.y - 40, 'CURSED', '#9c27b0'); break;
+      case 'drain': addFloat(p.x, p.y - 40, 'DRAINED', '#e91e63'); break;
       default: break;
     }
   }
@@ -404,14 +387,13 @@ function KrezcentQuest() {
     if (!attack || attack.kind !== 'knockback') return;
     const d = Math.hypot(dx, dy) || 1;
     const force = attack.force || 150;
-    const nx = p.x + (dx / d) * force * -0.3; // push opposite of approach
+    const nx = p.x + (dx / d) * force * -0.3;
     const ny = p.y + (dy / d) * force * -0.3;
     if (!collidesWall(nx, p.y, false)) p.x = nx;
     if (!collidesWall(p.x, ny, false)) p.y = ny;
     p.stun = Math.max(p.stun, 0.2);
   }
 
-  // ===== Boss logic =====
   function initBoss(w) {
     const def = bossForFloor(w.floor);
     const fm = 1 + (w.floor - 1) * 0.18;
@@ -422,27 +404,28 @@ function KrezcentQuest() {
     w.maze.bossAff = def.aff;
     w.maze.bossName = def.n;
     w.maze.bossColor = def.color;
-    w.maze.bossShape = def.shape || 'titan';
+    w.maze.bossShape = def.shape || 'cave_brute';
     w.maze.bossAI = def.aiPattern || BOSS_AI_PATTERNS.PROJECTILE;
     w.maze.bossData = def;
     w.maze.bossCooldown = 1.5;
     w.maze.bossPx = w.maze.bossX * 40 + 20;
     w.maze.bossPy = w.maze.bossY * 40 + 20;
-    w.maze.bossSpecial = 0;
     w.maze.bossShield = 0;
-    w.maze.bossPhase = 0;
+    w.maze.bossOrbitAngle = 0;
+    w.maze.bossTelegraphTimer = 0;
     if (def.unique) setMsg(`⚔ ${def.n} — ${def.desc || ''}`);
   }
+
   function updateBoss(w, c, p, dt) {
     const m = w.maze;
     const def = m.bossData;
     const pat = m.bossAI;
     const dist = Math.hypot(p.x - m.bossPx, p.y - m.bossPy);
 
-    // Shield timer (shielder pattern)
     if (m.bossShield > 0) m.bossShield -= dt;
+    if (m.bossTelegraphTimer > 0) m.bossTelegraphTimer -= dt;
 
-    // Tick boss heal-over-time if healer pattern
+    // Healer regenerates
     if (pat === BOSS_AI_PATTERNS.HEALER && m.bossHp < m.bossMaxHp) {
       m.bossHealTimer = (m.bossHealTimer || 0) + dt;
       if (m.bossHealTimer >= (def.healInterval || 1.5)) {
@@ -453,8 +436,28 @@ function KrezcentQuest() {
       }
     }
 
-    // Movement (most bosses approach the player slowly)
-    if (pat !== BOSS_AI_PATTERNS.TELEPORT && pat !== BOSS_AI_PATTERNS.PROJECTILE && pat !== BOSS_AI_PATTERNS.SPREADER) {
+    // Rager — recalculate damage scalar based on HP %
+    let dmgMod = 1;
+    if (pat === BOSS_AI_PATTERNS.RAGER) {
+      const hpPct = m.bossHp / m.bossMaxHp;
+      if (hpPct < (def.rageThreshold || 0.5)) dmgMod = def.rageDmgMult || 1.6;
+    }
+
+    // Movement
+    if (pat === BOSS_AI_PATTERNS.ORBITER) {
+      // Strafe around the player at a set radius
+      m.bossOrbitAngle += (def.orbitSpeed || 1.4) * dt;
+      const radius = def.orbitRadius || 200;
+      const targetX = p.x + Math.cos(m.bossOrbitAngle) * radius;
+      const targetY = p.y + Math.sin(m.bossOrbitAngle) * radius;
+      const adx = targetX - m.bossPx, ady = targetY - m.bossPy;
+      const ad = Math.hypot(adx, ady) || 1;
+      const moveSp = 90 * dt;
+      const stepX = m.bossPx + (adx / ad) * Math.min(moveSp, ad);
+      const stepY = m.bossPy + (ady / ad) * Math.min(moveSp, ad);
+      if (!collidesWall(stepX, m.bossPy, true)) m.bossPx = stepX;
+      if (!collidesWall(m.bossPx, stepY, true)) m.bossPy = stepY;
+    } else if (pat !== BOSS_AI_PATTERNS.TELEPORT && pat !== BOSS_AI_PATTERNS.PROJECTILE && pat !== BOSS_AI_PATTERNS.SPREADER) {
       const dxn = (p.x - m.bossPx) / Math.max(1, dist);
       const dyn = (p.y - m.bossPy) / Math.max(1, dist);
       const sp = (pat === BOSS_AI_PATTERNS.CHARGE ? (def.chargeSpeed || 5) : 1.8) * 30;
@@ -462,59 +465,43 @@ function KrezcentQuest() {
       const stepY = m.bossPy + dyn * sp * dt;
       if (!collidesWall(stepX, m.bossPy, true) && !pixelOnHazardTile(stepX, m.bossPy)) m.bossPx = stepX;
       if (!collidesWall(m.bossPx, stepY, true) && !pixelOnHazardTile(m.bossPx, stepY)) m.bossPy = stepY;
-      m.bossX = Math.floor(m.bossPx / 40);
-      m.bossY = Math.floor(m.bossPy / 40);
     }
 
-    // Pattern-specific actions on cooldown
+    m.bossX = Math.floor(m.bossPx / 40);
+    m.bossY = Math.floor(m.bossPy / 40);
+
     m.bossCooldown -= dt;
     if (m.bossCooldown <= 0) {
+      m.bossTelegraphTimer = 0.4; // brief flash before the next action
       switch (pat) {
-        case BOSS_AI_PATTERNS.PROJECTILE: {
-          m.bossCooldown = 1.0;
-          fireBossProjectile(m, c, p, def);
-          break;
-        }
-        case BOSS_AI_PATTERNS.SPREADER: {
-          m.bossCooldown = def.spreadCd || 2.0;
-          fireBossSpread(m, p, def, def.spreadCount || 6);
-          break;
-        }
-        case BOSS_AI_PATTERNS.CHARGE: {
-          m.bossCooldown = 1.8;
+        case BOSS_AI_PATTERNS.PROJECTILE: m.bossCooldown = 1.0; fireBossProjectile(m, p, dmgMod); break;
+        case BOSS_AI_PATTERNS.SPREADER: m.bossCooldown = def.spreadCd || 2.0; fireBossSpread(m, p, def.spreadCount || 6, dmgMod); break;
+        case BOSS_AI_PATTERNS.CHARGE: m.bossCooldown = 1.8;
           if (dist < 60 && p.invuln <= 0 && p.sky <= 0) {
-            damagePlayer(m.bossDmg * 0.8, m.bossAff);
+            damagePlayer(m.bossDmg * 0.8 * dmgMod, m.bossAff);
             applyKnockback(p, { kind: 'knockback', force: 220 }, p.x - m.bossPx, p.y - m.bossPy);
           }
           break;
-        }
         case BOSS_AI_PATTERNS.TELEPORT: {
           m.bossCooldown = def.teleportRate || 3.5;
-          // Blink near the player but not on top
           const ang = rand() * Math.PI * 2;
           const radius = 110 + rand() * 60;
           const tx = clamp(p.x + Math.cos(ang) * radius, 60, (m.W - 2) * 40);
           const ty = clamp(p.y + Math.sin(ang) * radius, 60, (m.H - 2) * 40);
           if (!collidesWall(tx, ty, true)) { m.bossPx = tx; m.bossPy = ty; m.bossX = Math.floor(tx / 40); m.bossY = Math.floor(ty / 40); }
-          w.effects.push({ x: m.bossPx, y: m.bossPy, type: 'aoe', life: 0.3, color: m.bossColor, radius: 28, delay: undefined });
-          fireBossProjectile(m, c, p, def);
+          w.effects.push({ x: m.bossPx, y: m.bossPy, type: 'aoe', life: 0.3, color: m.bossColor, radius: 28 });
+          fireBossProjectile(m, p, dmgMod);
           break;
         }
-        case BOSS_AI_PATTERNS.HEALER: {
-          m.bossCooldown = 1.2;
-          fireBossProjectile(m, c, p, def);
-          break;
-        }
+        case BOSS_AI_PATTERNS.HEALER: m.bossCooldown = 1.2; fireBossProjectile(m, p, dmgMod); break;
         case BOSS_AI_PATTERNS.BLINDER: {
           m.bossCooldown = def.blindInterval || 6.0;
-          // Pulse out a "blind" aoe — instant
-          w.effects.push({ x: m.bossPx, y: m.bossPy, type: 'aoe', life: 0.6, color: '#212121', radius: 220, delay: undefined });
+          w.effects.push({ x: m.bossPx, y: m.bossPy, type: 'aoe', life: 0.6, color: '#212121', radius: 220 });
           if (Math.hypot(p.x - m.bossPx, p.y - m.bossPy) < 220 && p.invuln <= 0) {
             p.blind = Math.max(p.blind, def.blindDur || 3);
             setMsg('You are blinded!');
           }
-          // Also fire a regular shot
-          fireBossProjectile(m, c, p, def);
+          fireBossProjectile(m, p, dmgMod);
           break;
         }
         case BOSS_AI_PATTERNS.SUMMONER: {
@@ -528,7 +515,7 @@ function KrezcentQuest() {
               m.monsters.push({ x: sx, y: sy, type: summonType, id: Math.random().toString(36).slice(2) });
             }
           }
-          fireBossProjectile(m, c, p, def);
+          fireBossProjectile(m, p, dmgMod);
           break;
         }
         case BOSS_AI_PATTERNS.SHIELDER: {
@@ -537,51 +524,56 @@ function KrezcentQuest() {
           setMsg(`${m.bossName} raises its guard!`);
           break;
         }
+        case BOSS_AI_PATTERNS.ORBITER: {
+          m.bossCooldown = 1.4;
+          fireBossSpread(m, p, 5, dmgMod);
+          break;
+        }
+        case BOSS_AI_PATTERNS.RAGER: {
+          m.bossCooldown = 1.0;
+          fireBossProjectile(m, p, dmgMod);
+          if (dist < 70 && p.invuln <= 0 && p.sky <= 0) damagePlayer(m.bossDmg * 0.5 * dmgMod, m.bossAff);
+          break;
+        }
         default: m.bossCooldown = 1.5;
       }
     }
-    // Melee contact damage for charging/melee patterns
     if ((pat === BOSS_AI_PATTERNS.CHARGE || pat === BOSS_AI_PATTERNS.HEALER) && dist < 50 && p.invuln <= 0 && p.sky <= 0) {
-      damagePlayer(m.bossDmg * 0.5, m.bossAff);
+      damagePlayer(m.bossDmg * 0.5 * dmgMod, m.bossAff);
     }
   }
-  function fireBossProjectile(m, c, p, def) {
+  function fireBossProjectile(m, p, dmgMod = 1) {
     const ang = Math.atan2(p.y - m.bossPy, p.x - m.bossPx);
     world.current.projectiles.push({
       x: m.bossPx, y: m.bossPy,
       vx: Math.cos(ang) * 280, vy: Math.sin(ang) * 280,
-      life: 2.5, dmg: m.bossDmg, aff: m.bossAff, fromPlayer: false,
-      color: AFFS[m.bossAff]?.color || SUB_COLOR[m.bossAff] || '#fff',
-      big: true,
+      life: 2.5, dmg: m.bossDmg * dmgMod, aff: m.bossAff, fromPlayer: false,
+      color: AFFS[m.bossAff]?.color || SUB_COLOR[m.bossAff] || '#fff', big: true,
     });
   }
-  function fireBossSpread(m, p, def, count) {
+  function fireBossSpread(m, p, count, dmgMod = 1) {
     const base = Math.atan2(p.y - m.bossPy, p.x - m.bossPx);
-    const spread = Math.PI * 1.6; // wide spread
+    const spread = Math.PI * 1.6;
     for (let i = 0; i < count; i++) {
-      const a = base - spread / 2 + (spread * i) / (count - 1);
+      const a = base - spread / 2 + (spread * i) / Math.max(1, count - 1);
       world.current.projectiles.push({
         x: m.bossPx, y: m.bossPy,
         vx: Math.cos(a) * 220, vy: Math.sin(a) * 220,
-        life: 2.5, dmg: m.bossDmg * 0.6, aff: m.bossAff, fromPlayer: false,
+        life: 2.5, dmg: m.bossDmg * 0.6 * dmgMod, aff: m.bossAff, fromPlayer: false,
         color: AFFS[m.bossAff]?.color || SUB_COLOR[m.bossAff] || '#fff',
       });
     }
   }
 
-  // ===== Collision =====
   function collidesWall(x, y, forMonster) {
     const w = world.current;
     if (w.maze) {
       const gx = Math.floor(x / 40), gy = Math.floor(y / 40);
       if (gx < 0 || gy < 0 || gx >= w.maze.W || gy >= w.maze.H) return true;
       const tile = w.maze.grid[gy][gx];
-      if (tile === 1) return true;
-      // Water and lava block monsters by default; for the player we treat lava as walkable
-      // (and damaging — handled elsewhere) and water as blocking unless bridge.
-      if (tile === 2) return true;  // water
-      if (forMonster && tile === 3) return true;  // monsters avoid lava
-      if (forMonster && tile === 4) return false; // grass walkable
+      if (tile === 1 || tile === 10) return true; // wall, grave
+      if (tile === 2) return true; // water
+      if (forMonster && tile === 3) return true;
       return false;
     }
     const z = ZONES[w.zone];
@@ -592,12 +584,11 @@ function KrezcentQuest() {
     return false;
   }
   function canMonsterStand(tileX, tileY) {
-    // For monster motion in tile coordinates (used by their grid-based step)
     const w = world.current; if (!w.maze) return true;
     const gx = Math.floor(tileX), gy = Math.floor(tileY);
     if (gx < 0 || gy < 0 || gx >= w.maze.W || gy >= w.maze.H) return false;
     const tile = w.maze.grid[gy][gx];
-    return tile === 0 || tile === 4 || tile === 5 || tile === 6 || tile === 7;
+    return tile === 0 || tile === 4 || tile === 5 || tile === 6 || tile === 7 || tile === 8 || tile === 9;
   }
   function pixelOnHazardTile(x, y) {
     const w = world.current; if (!w.maze) return false;
@@ -607,7 +598,6 @@ function KrezcentQuest() {
     return tile === 2 || tile === 3;
   }
 
-  // ===== Damage =====
   function damageMonster(m, dmg, aff) {
     const mult = affinityMultiplier(aff, m.aff ? [m.aff] : []);
     const final = Math.floor(dmg * mult);
@@ -632,12 +622,10 @@ function KrezcentQuest() {
   function damagePlayer(dmg, aff) {
     const c = charRef.current;
     if (!c) return;
-    const w = world.current;
-    const p = w.player;
+    const w = world.current; const p = w.player;
     if (p.shield > 0) {
       const absorb = Math.min(p.shield, dmg);
-      p.shield -= absorb;
-      dmg -= absorb;
+      p.shield -= absorb; dmg -= absorb;
       if (dmg <= 0) { addFloat(p.x, p.y - 30, 'BLOCKED', '#8be9fd'); return; }
     }
     let mult = affinityMultiplier(aff, Object.keys(c.affinities));
@@ -663,7 +651,6 @@ function KrezcentQuest() {
       const grade = floorLootGrade(world.current.floor);
       addItemToInventory({ key: `trophy_${grade}`, name: `${grade}-grade Monster Trophy`, grade, isTrophy: true });
     }
-    // Rare weapon drop from regular monsters
     if (rand() < 0.012) {
       const weaponKey = pick(Object.keys(WEAPONS));
       if (!c.ownedWeapons.includes(weaponKey)) {
@@ -687,7 +674,6 @@ function KrezcentQuest() {
     const itemKey = rollItemOfGrade(grade);
     if (itemKey) addItemToInventory({ key: itemKey, name: ITEMS[itemKey].n, grade: ITEMS[itemKey].g });
     addItemToInventory({ key: `trophy_${grade}`, name: `${grade}-grade Boss Trophy`, grade, isTrophy: true });
-    // Bosses drop a weapon ~25% of the time, unique bosses 60%
     const dropChance = def.unique ? 0.6 : 0.25;
     if (rand() < dropChance) {
       const weaponKey = pick(Object.keys(WEAPONS));
@@ -732,7 +718,7 @@ function KrezcentQuest() {
       c.knownAbilities[knownKey] = c.knownAbilities[knownKey] || [];
       if (!c.knownAbilities[knownKey].includes(ab.n)) {
         c.knownAbilities[knownKey].push(ab.n);
-        setMsg(`New ability learned: ${ab.n} (${knownKey}). Open Loadout (L) to equip it.`);
+        setMsg(`New ability: ${ab.n} (${knownKey}). Open Loadout (L) to equip.`);
       }
     }
   }
@@ -760,10 +746,8 @@ function KrezcentQuest() {
   }
 
   function doBasicAttack() {
-    const c = charRef.current;
-    if (!c) return;
-    const w = world.current;
-    const p = w.player;
+    const c = charRef.current; if (!c) return;
+    const w = world.current; const p = w.player;
     if (p.stun > 0 || p.sky > 0) return;
     const wpn = WEAPONS[c.weapon];
     const now = performance.now();
@@ -818,11 +802,9 @@ function KrezcentQuest() {
     }
   }
   function useAttribute(idx) {
-    const c = charRef.current;
-    if (!c) return;
+    const c = charRef.current; if (!c) return;
     const equipped = c.equippedAttrs || [];
-    const key = equipped[idx];
-    if (!key) return;
+    const key = equipped[idx]; if (!key) return;
     const w = world.current; const p = w.player;
     if (p.stun > 0) return;
     const attr = ATTRS[key]; if (!attr) return;
@@ -978,7 +960,6 @@ function KrezcentQuest() {
     if (itemKey) { addItemToInventory({ key: itemKey, name: ITEMS[itemKey].n, grade }); setMsg(`Chest: ${grade}-grade ${ITEMS[itemKey].n}!`); }
     const coins = Math.floor(20 + rand() * 50 + world.current.floor * 5);
     c.coins += coins;
-    // Chests rarely drop weapons
     if (rand() < 0.05) {
       const weaponKey = pick(Object.keys(WEAPONS));
       if (!c.ownedWeapons.includes(weaponKey)) {
@@ -1063,13 +1044,12 @@ function KrezcentQuest() {
       w.player.x = fromDir === 'fromHub' ? 60 : z.spawn.x;
       w.player.y = fromDir === 'fromHub' ? 450 : z.spawn.y;
       w.npcs = [
-        {
-          x: 700, y: 450, color: '#ffeb3b', kind: 'sage', prompt: 'Talk to Sage [SPACE]',
+        { x: 700, y: 450, color: '#ffeb3b', kind: 'sage', prompt: 'Talk to Sage [SPACE]',
           action: () => setMsg(
-            `Welcome, ${charRef.current.name}, to Krezcent Quest!\n\n` +
-            `• Move with WASD\n• Aim with mouse, attack J or click\n` +
+            `Welcome, ${charRef.current.name}!\n\n` +
+            `• Move WASD\n• Aim mouse, attack J/click\n` +
             `• Attributes 1-7, abilities QERFG\n• TAB inv · C stats · L loadout\n• SPACE interact\n\n` +
-            `Walk east to reach the Main Hub. New buildings await — the Blacksmith, Attribute Trainer, and Mystery Boxes are open for business.`
+            `Walk east to the Hub.`
           )
         },
       ];
@@ -1079,37 +1059,34 @@ function KrezcentQuest() {
       const z = ZONES.hub;
       w.player.x = fromDir === 'fromStarting' ? 60 : z.spawn.x;
       w.player.y = fromDir === 'fromStarting' ? 550 : z.spawn.y;
-      // NPC for each building — interaction point is at the building's door (center-bottom)
       w.npcs = z.buildings.map(b => {
-        const npc = {
-          x: b.x + b.w / 2, y: b.y + b.h - 20,
-          color: b.color, kind: b.kind,
-          building: b,
-        };
+        const npc = { x: b.x + b.w / 2, y: b.y + b.h - 20, color: b.color, kind: b.kind, building: b };
         switch (b.kind) {
-          case 'shop':       npc.prompt = 'Enter Shop [SPACE]';        npc.action = () => setModal('shop'); break;
-          case 'dungeon':    npc.prompt = 'Enter Dungeon [SPACE]';     npc.action = () => setModal('dungeon_select'); break;
-          case 'pvp':        npc.prompt = 'PvP Arena [SPACE]';         npc.action = () => setModal('pvp'); break;
-          case 'save':       npc.prompt = 'Save & Logout [SPACE]';     npc.action = async () => { await saveCharacter(); setScreen('login'); setChar(null); setAccount(null); }; break;
-          case 'party':      npc.prompt = 'Party (soon) [SPACE]';     npc.action = () => setMsg('Party play requires online multiplayer (future update)'); break;
-          case 'blacksmith': npc.prompt = 'Blacksmith [SPACE]';        npc.action = () => setModal('blacksmith'); break;
-          case 'trainer':    npc.prompt = 'Attribute Trainer [SPACE]'; npc.action = () => setModal('trainer'); break;
-          case 'mystery':    npc.prompt = 'Mystery Boxes [SPACE]';     npc.action = () => setModal('mystery'); break;
+          case 'shop': npc.prompt = 'Enter Shop [SPACE]'; npc.action = () => setModal('shop'); break;
+          case 'dungeon': npc.prompt = 'Enter Dungeon [SPACE]'; npc.action = () => setModal('dungeon_select'); break;
+          case 'pvp': npc.prompt = 'PvP Arena [SPACE]'; npc.action = () => setModal('pvp'); break;
+          case 'save': npc.prompt = 'Save & Logout [SPACE]'; npc.action = async () => { await saveCharacter(); setScreen('login'); setChar(null); setAccount(null); }; break;
+          case 'party': npc.prompt = 'Party (soon) [SPACE]'; npc.action = () => setMsg('Party play requires online multiplayer (future update)'); break;
+          case 'blacksmith': npc.prompt = 'Blacksmith [SPACE]'; npc.action = () => setModal('blacksmith'); break;
+          case 'trainer': npc.prompt = 'Attribute Trainer [SPACE]'; npc.action = () => setModal('trainer'); break;
+          case 'mystery': npc.prompt = 'Mystery Boxes [SPACE]'; npc.action = () => setModal('mystery'); break;
         }
         return npc;
       });
-      setMsg('Main Hub. New buildings unlocked: Blacksmith, Trainer, Mystery Boxes.');
+      setMsg('Main Hub.');
     } else if (zone === 'dungeon') {
       w.maze = generateFloor(w.floor);
       w.maze.floor = w.floor;
-      w.player.x = 60; w.player.y = 60;
+      // Spawn from the floor's own spawn coords
+      w.player.x = w.maze.spawn.x; w.player.y = w.maze.spawn.y;
       w.npcs = [];
       setMsg(`Floor ${w.floor} (${w.maze.type}). ${w.maze.intro || ''}`);
     }
-    setTick(t => t + 1);
+    setHudTick(t => t + 1);
   }
-
-  // ===== Drawing =====
+// ============================================================
+  //                      DRAWING
+  // ============================================================
   function drawWorld() {
     const cv = canvasRef.current; if (!cv) return;
     const ctx = cv.getContext('2d');
@@ -1117,7 +1094,7 @@ function KrezcentQuest() {
     const w = world.current; const p = w.player;
     const cam = { x: p.x - W / 2, y: p.y - H / 2 };
 
-    const bgColors = { starting: '#1a3a14', hub: '#1a1a22', dungeon: '#0a0612' };
+    const bgColors = { starting: '#1a3a14', hub: '#1a1a22', dungeon: w.maze?.theme?.bg || '#0a0612' };
     ctx.fillStyle = bgColors[w.zone] || '#000';
     ctx.fillRect(0, 0, W, H);
 
@@ -1201,11 +1178,10 @@ function KrezcentQuest() {
     const z = ZONES.starting;
     ctx.fillStyle = '#5fae45';
     ctx.fillRect(-cam.x, -cam.y, z.w, z.h);
-    const flowerSpots = [[150, 200], [250, 600], [500, 150], [550, 600], [800, 250], [850, 550], [1000, 200], [1100, 600], [1300, 300]];
+    const flowerSpots = [[150,200],[250,600],[500,150],[550,600],[800,250],[850,550],[1000,200],[1100,600],[1300,300]];
     flowerSpots.forEach(([fx, fy], i) => {
-      const colors = ['#f9d5e5', '#fffacd', '#e0bbe4', '#ffeb3b', '#ff7043'];
-      ctx.fillStyle = '#3b6f2c';
-      ctx.fillRect(fx - cam.x, fy - cam.y, 2, 8);
+      const colors = ['#f9d5e5','#fffacd','#e0bbe4','#ffeb3b','#ff7043'];
+      ctx.fillStyle = '#3b6f2c'; ctx.fillRect(fx - cam.x, fy - cam.y, 2, 8);
       ctx.fillStyle = colors[i % colors.length];
       ctx.beginPath();
       for (let j = 0; j < 5; j++) {
@@ -1214,9 +1190,7 @@ function KrezcentQuest() {
       }
       ctx.fill();
     });
-    const trees = [];
-    for (let tx = 80; tx < 1500; tx += 120) { trees.push([tx, 80]); trees.push([tx, 800]); }
-    trees.forEach(([tx, ty]) => drawTree(ctx, tx - cam.x, ty - cam.y));
+    for (let tx = 80; tx < 1500; tx += 120) { drawTree(ctx, tx - cam.x, 80 - cam.y); drawTree(ctx, tx - cam.x, 800 - cam.y); }
     ctx.fillStyle = '#3b6f2c';
     z.walls.forEach(wl => ctx.fillRect(wl.x - cam.x, wl.y - cam.y, wl.w, wl.h));
     ctx.fillStyle = '#8d6e63';
@@ -1228,7 +1202,6 @@ function KrezcentQuest() {
     const z = ZONES.hub;
     ctx.fillStyle = '#6b6a72';
     ctx.fillRect(-cam.x, -cam.y, z.w, z.h);
-    // Tile pattern (inside the hub only)
     for (let y = 0; y < z.h; y += 40) {
       for (let x = 0; x < z.w; x += 40) {
         ctx.fillStyle = ((x + y) / 40) % 2 < 1 ? '#5e5e66' : '#52525a';
@@ -1237,7 +1210,6 @@ function KrezcentQuest() {
         ctx.strokeRect(x - cam.x, y - cam.y, 40, 40);
       }
     }
-    // Central fountain
     ctx.fillStyle = '#9c8767';
     ctx.beginPath(); ctx.arc(1100 - cam.x, 540 - cam.y, 80, 0, Math.PI * 2); ctx.fill();
     ctx.strokeStyle = '#5d4e36'; ctx.lineWidth = 4;
@@ -1245,17 +1217,13 @@ function KrezcentQuest() {
     ctx.lineWidth = 1;
     ctx.fillStyle = '#fff8e1';
     ctx.beginPath(); ctx.arc(1100 - cam.x, 540 - cam.y, 30, 0, Math.PI * 2); ctx.fill();
-    // Buildings
     for (const b of z.buildings) drawBuilding(ctx, b.x - cam.x, b.y - cam.y, b.w, b.h, b.color, b.label);
-    // Lanterns at building corners
     for (const b of z.buildings) {
       drawLantern(ctx, b.x - cam.x, b.y + b.h + 20 - cam.y);
       drawLantern(ctx, b.x + b.w - cam.x, b.y + b.h + 20 - cam.y);
     }
-    // Border walls
     ctx.fillStyle = '#37363c';
     z.walls.forEach(wl => ctx.fillRect(wl.x - cam.x, wl.y - cam.y, wl.w, wl.h));
-    // Path back to field
     ctx.fillStyle = '#8d6e63';
     for (let x = -40; x < 100; x += 30) ctx.fillRect(x - cam.x, 530 - cam.y, 24, 40);
     drawSign(ctx, 10 - cam.x, 510 - cam.y, '← Field');
@@ -1265,10 +1233,17 @@ function KrezcentQuest() {
     const w = world.current; const m = w.maze;
     const th = m.theme || themeForFloor(w.floor);
     const wallColor = th.wall, floorColor = th.floor, accentColor = th.accent;
+    const fogged = m.fogOfWar && m.revealed;
     for (let y = 0; y < m.H; y++) {
       for (let x = 0; x < m.W; x++) {
         const px = x * 40 - cam.x, py = y * 40 - cam.y;
         if (px < -40 || py < -40 || px > W || py > H) continue;
+        // Fog of war: tiles not yet revealed render as solid black
+        if (fogged && !m.revealed.has(`${x},${y}`)) {
+          ctx.fillStyle = '#000';
+          ctx.fillRect(px, py, 40, 40);
+          continue;
+        }
         const tile = m.grid[y][x];
         switch (tile) {
           case 1: // wall
@@ -1282,60 +1257,77 @@ function KrezcentQuest() {
             ctx.fillRect(px + 29, py + 20, 2, 20);
             break;
           case 2: // water
-            ctx.fillStyle = '#1565c0';
-            ctx.fillRect(px, py, 40, 40);
+            ctx.fillStyle = '#1565c0'; ctx.fillRect(px, py, 40, 40);
             ctx.fillStyle = 'rgba(255,255,255,0.15)';
             ctx.fillRect(px + 2 + (Math.sin(w.timeOfDay * 2 + x) * 2), py + 10, 8, 2);
             ctx.fillRect(px + 22 + (Math.sin(w.timeOfDay * 2.4 + y) * 2), py + 25, 10, 2);
             break;
           case 3: // lava
-            ctx.fillStyle = '#5d1f08';
-            ctx.fillRect(px, py, 40, 40);
+            ctx.fillStyle = '#5d1f08'; ctx.fillRect(px, py, 40, 40);
             ctx.fillStyle = '#ff5722';
             ctx.globalAlpha = 0.55 + 0.25 * Math.sin(w.timeOfDay * 3 + x + y);
             ctx.fillRect(px + 4, py + 4, 32, 32);
             ctx.globalAlpha = 1;
-            ctx.fillStyle = '#ffd54f';
-            ctx.fillRect(px + 8, py + 8, 8, 4);
+            ctx.fillStyle = '#ffd54f'; ctx.fillRect(px + 8, py + 8, 8, 4);
             break;
           case 4: // grass
-            ctx.fillStyle = '#3a6b2c';
-            ctx.fillRect(px, py, 40, 40);
+            ctx.fillStyle = '#3a6b2c'; ctx.fillRect(px, py, 40, 40);
             ctx.fillStyle = '#4f8c3a';
             ctx.fillRect(px + 6, py + 4, 2, 5);
             ctx.fillRect(px + 22, py + 14, 2, 5);
             ctx.fillRect(px + 14, py + 28, 2, 5);
             break;
           case 5: // bridge
-            ctx.fillStyle = '#8d6e63';
-            ctx.fillRect(px, py, 40, 40);
+            ctx.fillStyle = '#8d6e63'; ctx.fillRect(px, py, 40, 40);
             ctx.fillStyle = '#6d4c41';
             ctx.fillRect(px, py, 40, 4);
             ctx.fillRect(px, py + 18, 40, 4);
             ctx.fillRect(px, py + 36, 40, 4);
             break;
           case 6: // sand
-            ctx.fillStyle = '#d7c79a';
-            ctx.fillRect(px, py, 40, 40);
-            break;
+            ctx.fillStyle = '#d7c79a'; ctx.fillRect(px, py, 40, 40); break;
           case 7: // stone tile
-            ctx.fillStyle = '#8d8d99';
-            ctx.fillRect(px, py, 40, 40);
-            ctx.strokeStyle = '#5d5d66'; ctx.strokeRect(px, py, 40, 40);
+            ctx.fillStyle = '#8d8d99'; ctx.fillRect(px, py, 40, 40);
+            ctx.strokeStyle = '#5d5d66'; ctx.strokeRect(px, py, 40, 40); break;
+          case 8: // cracked floor (a hint of trap)
+            ctx.fillStyle = floorColor; ctx.fillRect(px, py, 40, 40);
+            ctx.strokeStyle = '#444'; ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(px + 5, py + 10); ctx.lineTo(px + 20, py + 22); ctx.lineTo(px + 35, py + 15);
+            ctx.moveTo(px + 12, py + 30); ctx.lineTo(px + 28, py + 32);
+            ctx.stroke(); ctx.lineWidth = 1;
+            break;
+          case 9: // door
+            ctx.fillStyle = floorColor; ctx.fillRect(px, py, 40, 40);
+            ctx.fillStyle = '#6d4c41';
+            ctx.fillRect(px + 6, py + 4, 28, 36);
+            ctx.fillStyle = '#fbc02d';
+            ctx.beginPath(); ctx.arc(px + 28, py + 22, 2, 0, Math.PI * 2); ctx.fill();
+            break;
+          case 10: // grave marker (acts as wall)
+            ctx.fillStyle = floorColor; ctx.fillRect(px, py, 40, 40);
+            ctx.fillStyle = '#5d5d66';
+            ctx.fillRect(px + 10, py + 14, 20, 22);
+            ctx.beginPath();
+            ctx.moveTo(px + 10, py + 14); ctx.lineTo(px + 20, py + 6); ctx.lineTo(px + 30, py + 14);
+            ctx.closePath(); ctx.fill();
+            ctx.fillStyle = '#222';
+            ctx.fillRect(px + 18, py + 20, 4, 10); ctx.fillRect(px + 14, py + 24, 12, 4);
             break;
           default: // 0 floor
-            ctx.fillStyle = floorColor;
-            ctx.fillRect(px, py, 40, 40);
+            ctx.fillStyle = floorColor; ctx.fillRect(px, py, 40, 40);
         }
       }
     }
     // Decorations
     for (const d of m.decorations || []) {
+      if (fogged && !m.revealed.has(`${d.x},${d.y}`)) continue;
       if (d.type === 'torch') drawTorch(ctx, d.x * 40 + 20 - cam.x, d.y * 40 + 36 - cam.y, w.timeOfDay);
     }
-    // Hazards (only render once they're visible)
+    // Hazards
     for (const h of m.hazards || []) {
       if (h.hidden) continue;
+      if (fogged && !m.revealed.has(`${h.x},${h.y}`)) continue;
       const hx = h.x * 40 + 20 - cam.x, hy = h.y * 40 + 20 - cam.y;
       if (h.kind === 'spike') {
         ctx.fillStyle = '#616161';
@@ -1347,8 +1339,7 @@ function KrezcentQuest() {
         }
         ctx.fill();
       } else if (h.kind === 'arrow') {
-        ctx.fillStyle = '#8d6e63';
-        ctx.fillRect(hx - 8, hy - 8, 16, 16);
+        ctx.fillStyle = '#8d6e63'; ctx.fillRect(hx - 8, hy - 8, 16, 16);
         ctx.fillStyle = '#212121';
         ctx.beginPath(); ctx.arc(hx, hy, 3, 0, Math.PI * 2); ctx.fill();
       } else if (h.kind === 'firevent') {
@@ -1370,10 +1361,8 @@ function KrezcentQuest() {
         } else if (h.strikeFlash > 0) {
           ctx.strokeStyle = '#fff'; ctx.lineWidth = 6;
           ctx.beginPath();
-          ctx.moveTo(hx, hy - 200);
-          ctx.lineTo(hx - 4, hy - 100);
-          ctx.lineTo(hx + 6, hy - 50);
-          ctx.lineTo(hx, hy);
+          ctx.moveTo(hx, hy - 200); ctx.lineTo(hx - 4, hy - 100);
+          ctx.lineTo(hx + 6, hy - 50); ctx.lineTo(hx, hy);
           ctx.stroke(); ctx.lineWidth = 1;
           ctx.fillStyle = '#fff176'; ctx.globalAlpha = 0.7;
           ctx.beginPath(); ctx.arc(hx, hy, 30, 0, Math.PI * 2); ctx.fill();
@@ -1392,23 +1381,31 @@ function KrezcentQuest() {
         ctx.beginPath(); ctx.arc(hx, hy - 3, 2, 0, Math.PI * 2); ctx.fill();
       }
     }
-    // Boss room highlight
-    ctx.strokeStyle = '#ff1744'; ctx.lineWidth = 3;
-    ctx.strokeRect((m.bossX - 1) * 40 - cam.x, (m.bossY - 1) * 40 - cam.y, 120, 120);
-    ctx.lineWidth = 1;
+    // Boss room highlight (only if visible)
+    if (!fogged || m.revealed.has(`${m.bossX},${m.bossY}`)) {
+      ctx.strokeStyle = '#ff1744'; ctx.lineWidth = 3;
+      ctx.strokeRect((m.bossX - 1) * 40 - cam.x, (m.bossY - 1) * 40 - cam.y, 120, 120);
+      ctx.lineWidth = 1;
+    }
     // Chests
     for (const ch of m.chests || []) {
       if (ch.opened) continue;
+      if (fogged && !m.revealed.has(`${ch.x},${ch.y}`)) continue;
       drawChest(ctx, ch.x * 40 + 20 - cam.x, ch.y * 40 + 25 - cam.y);
     }
     // Monsters
     for (const mon of m.monsters) {
       if (mon.hp <= 0) continue;
+      const mtx = Math.floor(mon.x), mty = Math.floor(mon.y);
+      if (fogged && !m.revealed.has(`${mtx},${mty}`)) continue;
       drawMonster(ctx, mon.x * 40 + 20 - cam.x, mon.y * 40 + 20 - cam.y, mon);
     }
     // Boss
     if (!m.boss.defeated && m.bossHp != null) {
-      drawBoss(ctx, m.bossPx - cam.x, m.bossPy - cam.y, m, w.timeOfDay);
+      const btx = Math.floor(m.bossPx / 40), bty = Math.floor(m.bossPy / 40);
+      if (!fogged || m.revealed.has(`${btx},${bty}`)) {
+        drawBoss(ctx, m.bossPx - cam.x, m.bossPy - cam.y, m, w.timeOfDay);
+      }
     }
   }
 
@@ -1502,14 +1499,12 @@ function KrezcentQuest() {
   }
 
   function drawMonster(ctx, x, y, mon) {
-    const t = MONSTER_TYPES[mon.type];
-    if (!t) return;
+    const t = MONSTER_TYPES[mon.type]; if (!t) return;
     ctx.fillStyle = 'rgba(0,0,0,0.3)';
     ctx.beginPath(); ctx.ellipse(x, y + 16, 14, 4, 0, 0, Math.PI * 2); ctx.fill();
     const bob = Math.sin(mon.animTime * 6) * 1.5;
     const shape = t.shape || 'humanoid';
     const c = t.color;
-    // Lunge telegraph indicator
     if (mon.lunge > 0) {
       ctx.strokeStyle = '#ff1744'; ctx.lineWidth = 2;
       ctx.globalAlpha = 0.7;
@@ -1527,8 +1522,7 @@ function KrezcentQuest() {
       ctx.fillStyle = c;
       const wing = Math.sin(mon.animTime * 12) * 4;
       ctx.beginPath();
-      ctx.moveTo(x - 16, y - wing);
-      ctx.lineTo(x - 8, y - 4); ctx.lineTo(x + 8, y - 4); ctx.lineTo(x + 16, y - wing);
+      ctx.moveTo(x - 16, y - wing); ctx.lineTo(x - 8, y - 4); ctx.lineTo(x + 8, y - 4); ctx.lineTo(x + 16, y - wing);
       ctx.lineTo(x + 12, y + 4); ctx.lineTo(x - 12, y + 4); ctx.closePath(); ctx.fill();
       ctx.fillStyle = '#ff5252';
       ctx.beginPath(); ctx.arc(x - 3, y - 2, 1.5, 0, Math.PI * 2); ctx.arc(x + 3, y - 2, 1.5, 0, Math.PI * 2); ctx.fill();
@@ -1537,14 +1531,8 @@ function KrezcentQuest() {
       ctx.beginPath(); ctx.arc(x, y + 4, 10, 0, Math.PI * 2); ctx.fill();
       ctx.beginPath(); ctx.arc(x, y - 4, 6, 0, Math.PI * 2); ctx.fill();
       ctx.strokeStyle = c; ctx.lineWidth = 2;
-      for (let i = -2; i <= 2; i++) {
-        if (i === 0) continue;
-        const a = (i / 3) * 0.7;
-        ctx.beginPath();
-        ctx.moveTo(x, y + 4);
-        ctx.lineTo(x + Math.cos(a) * 14, y + 4 + Math.sin(a) * 8 + bob);
-        ctx.stroke();
-      }
+      for (let i = -2; i <= 2; i++) { if (i === 0) continue; const a = (i / 3) * 0.7;
+        ctx.beginPath(); ctx.moveTo(x, y + 4); ctx.lineTo(x + Math.cos(a) * 14, y + 4 + Math.sin(a) * 8 + bob); ctx.stroke(); }
       ctx.lineWidth = 1;
       ctx.fillStyle = '#ff5252';
       ctx.beginPath(); ctx.arc(x - 2, y - 4, 1.5, 0, Math.PI * 2); ctx.arc(x + 2, y - 4, 1.5, 0, Math.PI * 2); ctx.fill();
@@ -1552,7 +1540,6 @@ function KrezcentQuest() {
       ctx.fillStyle = c;
       ctx.beginPath(); ctx.ellipse(x, y + 4 + bob * 0.4, 13, 8, 0, 0, Math.PI * 2); ctx.fill();
       ctx.beginPath(); ctx.arc(x + 10, y - 2, 6, 0, Math.PI * 2); ctx.fill();
-      // ears
       ctx.beginPath();
       ctx.moveTo(x + 6, y - 8); ctx.lineTo(x + 9, y - 14); ctx.lineTo(x + 11, y - 6);
       ctx.moveTo(x + 13, y - 8); ctx.lineTo(x + 16, y - 14); ctx.lineTo(x + 14, y - 6);
@@ -1561,20 +1548,14 @@ function KrezcentQuest() {
       ctx.beginPath(); ctx.arc(x + 11, y - 2, 1.5, 0, Math.PI * 2); ctx.fill();
     } else if (shape === 'serpent') {
       ctx.fillStyle = c;
-      // Coiled body
       ctx.beginPath();
-      for (let i = 0; i < 5; i++) {
-        const r = 12 - i * 1.5;
-        ctx.arc(x, y + bob * 0.4, r, 0, Math.PI * 2);
-      }
+      for (let i = 0; i < 5; i++) { const r = 12 - i * 1.5; ctx.arc(x, y + bob * 0.4, r, 0, Math.PI * 2); }
       ctx.fill();
       ctx.fillStyle = '#ff5252';
       ctx.beginPath(); ctx.arc(x - 3, y - 2, 1.5, 0, Math.PI * 2); ctx.arc(x + 3, y - 2, 1.5, 0, Math.PI * 2); ctx.fill();
     } else if (shape === 'crab') {
       ctx.fillStyle = c;
       ctx.beginPath(); ctx.ellipse(x, y + 4, 14, 8, 0, 0, Math.PI * 2); ctx.fill();
-      // claws
-      ctx.fillStyle = c;
       ctx.beginPath(); ctx.arc(x - 16, y, 5, 0, Math.PI * 2); ctx.fill();
       ctx.beginPath(); ctx.arc(x + 16, y, 5, 0, Math.PI * 2); ctx.fill();
       ctx.fillStyle = '#ff5252';
@@ -1582,12 +1563,8 @@ function KrezcentQuest() {
     } else if (shape === 'wraith') {
       ctx.fillStyle = c; ctx.globalAlpha = 0.85;
       ctx.beginPath();
-      ctx.moveTo(x - 12, y - 10);
-      ctx.lineTo(x + 12, y - 10);
-      ctx.lineTo(x + 9, y + 10 + bob);
-      ctx.lineTo(x, y + 14 + bob);
-      ctx.lineTo(x - 9, y + 10 + bob);
-      ctx.closePath(); ctx.fill();
+      ctx.moveTo(x - 12, y - 10); ctx.lineTo(x + 12, y - 10); ctx.lineTo(x + 9, y + 10 + bob);
+      ctx.lineTo(x, y + 14 + bob); ctx.lineTo(x - 9, y + 10 + bob); ctx.closePath(); ctx.fill();
       ctx.globalAlpha = 1;
       ctx.fillStyle = '#fff';
       ctx.beginPath(); ctx.arc(x - 4, y - 4, 2, 0, Math.PI * 2); ctx.arc(x + 4, y - 4, 2, 0, Math.PI * 2); ctx.fill();
@@ -1599,8 +1576,7 @@ function KrezcentQuest() {
       ctx.fillStyle = '#000';
       ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI * 2); ctx.fill();
     } else if (shape === 'orb') {
-      ctx.fillStyle = c;
-      ctx.shadowColor = c; ctx.shadowBlur = 14;
+      ctx.fillStyle = c; ctx.shadowColor = c; ctx.shadowBlur = 14;
       ctx.beginPath(); ctx.arc(x, y, 12, 0, Math.PI * 2); ctx.fill();
       ctx.shadowBlur = 0;
       ctx.fillStyle = '#fff';
@@ -1609,7 +1585,6 @@ function KrezcentQuest() {
       ctx.fillStyle = c;
       ctx.fillRect(x - 7, y + 4, 5, 12 + bob); ctx.fillRect(x + 2, y + 4, 5, 12 - bob);
       ctx.beginPath(); ctx.arc(x, y, 11, 0, Math.PI * 2); ctx.fill();
-      // Horns
       ctx.beginPath();
       ctx.moveTo(x - 6, y - 8); ctx.lineTo(x - 4, y - 16); ctx.lineTo(x - 2, y - 8);
       ctx.moveTo(x + 6, y - 8); ctx.lineTo(x + 4, y - 16); ctx.lineTo(x + 2, y - 8);
@@ -1618,14 +1593,13 @@ function KrezcentQuest() {
       ctx.beginPath(); ctx.arc(x - 3, y - 2, 1.5, 0, Math.PI * 2); ctx.arc(x + 3, y - 2, 1.5, 0, Math.PI * 2); ctx.fill();
     } else if (shape === 'golem') {
       ctx.fillStyle = c;
-      ctx.fillRect(x - 14, y - 8, 28, 24); // big body
-      ctx.fillRect(x - 8, y - 18, 16, 12); // head
+      ctx.fillRect(x - 14, y - 8, 28, 24);
+      ctx.fillRect(x - 8, y - 18, 16, 12);
       ctx.fillStyle = '#ff5252';
       ctx.beginPath(); ctx.arc(x - 4, y - 12, 1.5, 0, Math.PI * 2); ctx.arc(x + 4, y - 12, 1.5, 0, Math.PI * 2); ctx.fill();
       ctx.strokeStyle = '#000'; ctx.lineWidth = 1;
       ctx.strokeRect(x - 14, y - 8, 28, 24); ctx.strokeRect(x - 8, y - 18, 16, 12);
     } else {
-      // humanoid fallback
       ctx.fillStyle = '#222';
       ctx.fillRect(x - 6, y + 6, 4, 10 + bob); ctx.fillRect(x + 2, y + 6, 4, 10 - bob);
       ctx.fillStyle = c;
@@ -1633,7 +1607,6 @@ function KrezcentQuest() {
       ctx.fillStyle = '#ff5252';
       ctx.beginPath(); ctx.arc(x - 4, y, 2, 0, Math.PI * 2); ctx.arc(x + 4, y, 2, 0, Math.PI * 2); ctx.fill();
     }
-    // HP bar
     if (mon.hp < mon.maxHp) {
       ctx.fillStyle = '#333'; ctx.fillRect(x - 16, y - 24, 32, 5);
       ctx.fillStyle = '#f44336'; ctx.fillRect(x - 16, y - 24, 32 * (mon.hp / mon.maxHp), 5);
@@ -1641,115 +1614,466 @@ function KrezcentQuest() {
     }
   }
 
+  // ============================================================
+  //                  BOSS SHAPE DRAWINGS
+  // ============================================================
   function drawBoss(ctx, x, y, m, t) {
+    // Telegraph flash
+    const telegraph = m.bossTelegraphTimer > 0;
     const pulse = Math.sin(t * 4) * 3;
-    const shape = m.bossShape;
-    // shadow
+    // Shadow
     ctx.fillStyle = 'rgba(0,0,0,0.4)';
-    ctx.beginPath(); ctx.ellipse(x, y + 28, 28, 7, 0, 0, Math.PI * 2); ctx.fill();
-    // aura
-    ctx.fillStyle = m.bossColor; ctx.globalAlpha = 0.25;
-    ctx.beginPath(); ctx.arc(x, y, 40 + pulse, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(x, y + 32, 32, 8, 0, 0, Math.PI * 2); ctx.fill();
+    // Aura
+    ctx.fillStyle = m.bossColor; ctx.globalAlpha = telegraph ? 0.5 : 0.25;
+    ctx.beginPath(); ctx.arc(x, y, 44 + pulse, 0, Math.PI * 2); ctx.fill();
     ctx.globalAlpha = 1;
 
-    if (shape === 'titan') {
-      ctx.fillStyle = m.bossColor;
-      ctx.fillRect(x - 22, y - 10, 44, 32);
-      ctx.fillRect(x - 12, y - 28, 24, 18);
-      ctx.fillStyle = '#ff1744';
-      ctx.beginPath(); ctx.arc(x - 5, y - 18, 2, 0, Math.PI * 2); ctx.arc(x + 5, y - 18, 2, 0, Math.PI * 2); ctx.fill();
-    } else if (shape === 'wraith' || shape === 'specter') {
-      ctx.fillStyle = m.bossColor; ctx.globalAlpha = 0.85;
-      ctx.beginPath();
-      ctx.moveTo(x - 22, y - 18);
-      ctx.lineTo(x + 22, y - 18);
-      ctx.lineTo(x + 18, y + 18 + pulse);
-      ctx.lineTo(x, y + 24 + pulse);
-      ctx.lineTo(x - 18, y + 18 + pulse);
-      ctx.closePath(); ctx.fill();
-      ctx.globalAlpha = 1;
-      ctx.fillStyle = '#fff';
-      ctx.beginPath(); ctx.arc(x - 7, y - 6, 3, 0, Math.PI * 2); ctx.arc(x + 7, y - 6, 3, 0, Math.PI * 2); ctx.fill();
-    } else if (shape === 'sphere') {
-      ctx.fillStyle = m.bossColor;
-      ctx.beginPath(); ctx.arc(x, y, 26 + pulse, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = '#fff';
-      ctx.beginPath(); ctx.arc(x - 8, y - 6, 4, 0, Math.PI * 2); ctx.arc(x + 8, y - 6, 4, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = '#000';
-      ctx.beginPath(); ctx.arc(x - 8, y - 6, 2, 0, Math.PI * 2); ctx.arc(x + 8, y - 6, 2, 0, Math.PI * 2); ctx.fill();
-    } else if (shape === 'beast') {
-      ctx.fillStyle = m.bossColor;
-      ctx.beginPath(); ctx.ellipse(x, y + 4, 26, 16, 0, 0, Math.PI * 2); ctx.fill();
-      ctx.beginPath(); ctx.arc(x + 14, y - 6, 10, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = '#ff1744';
-      ctx.beginPath(); ctx.arc(x + 16, y - 8, 2, 0, Math.PI * 2); ctx.fill();
-    } else if (shape === 'serpent' || shape === 'leviathan') {
-      ctx.fillStyle = m.bossColor;
-      for (let i = 0; i < 5; i++) {
-        const r = 22 - i * 3;
-        const oy = Math.sin(t * 3 + i) * 4;
-        ctx.beginPath(); ctx.arc(x, y + oy, r, 0, Math.PI * 2); ctx.fill();
-      }
-      ctx.fillStyle = '#ff1744';
-      ctx.beginPath(); ctx.arc(x - 5, y - 6, 2.5, 0, Math.PI * 2); ctx.arc(x + 5, y - 6, 2.5, 0, Math.PI * 2); ctx.fill();
-    } else if (shape === 'spider_queen') {
-      ctx.fillStyle = m.bossColor;
-      ctx.beginPath(); ctx.arc(x, y + 6, 18, 0, Math.PI * 2); ctx.fill();
-      ctx.beginPath(); ctx.arc(x, y - 8, 12, 0, Math.PI * 2); ctx.fill();
-      ctx.strokeStyle = m.bossColor; ctx.lineWidth = 4;
-      for (let i = -3; i <= 3; i++) {
-        if (i === 0) continue;
-        const a = (i / 4) * 0.8;
-        ctx.beginPath();
-        ctx.moveTo(x, y + 6);
-        ctx.lineTo(x + Math.cos(a) * 30, y + 6 + Math.sin(a) * 18);
-        ctx.stroke();
-      }
-      ctx.lineWidth = 1;
-      ctx.fillStyle = '#ff1744';
-      ctx.beginPath(); ctx.arc(x - 4, y - 8, 2.5, 0, Math.PI * 2); ctx.arc(x + 4, y - 8, 2.5, 0, Math.PI * 2); ctx.fill();
-    } else if (shape === 'avatar') {
-      ctx.fillStyle = m.bossColor;
-      ctx.fillRect(x - 16, y - 4, 32, 28);
-      ctx.beginPath(); ctx.arc(x, y - 14, 14, 0, Math.PI * 2); ctx.fill();
-      // halo
-      ctx.strokeStyle = '#ffd54f'; ctx.lineWidth = 3;
-      ctx.beginPath(); ctx.arc(x, y - 22, 16, 0, Math.PI * 2); ctx.stroke();
-      ctx.lineWidth = 1;
-      ctx.fillStyle = '#fff';
-      ctx.beginPath(); ctx.arc(x - 4, y - 14, 2, 0, Math.PI * 2); ctx.arc(x + 4, y - 14, 2, 0, Math.PI * 2); ctx.fill();
-    } else if (shape === 'eye_lord') {
-      ctx.fillStyle = m.bossColor;
-      ctx.beginPath(); ctx.arc(x, y, 30, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = '#fff';
-      ctx.beginPath(); ctx.arc(x, y, 18, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = '#000';
-      ctx.beginPath(); ctx.arc(x, y, 9, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = '#fff';
-      ctx.beginPath(); ctx.arc(x - 3, y - 3, 3, 0, Math.PI * 2); ctx.fill();
-    } else {
-      // generic
-      ctx.fillStyle = m.bossColor;
-      ctx.beginPath(); ctx.arc(x, y, 28, 0, Math.PI * 2); ctx.fill();
-    }
-    // Shielder shield ring
+    const draw = BOSS_SHAPE_DRAWS[m.bossShape] || BOSS_SHAPE_DRAWS.cave_brute;
+    draw(ctx, x, y, m, t, pulse);
+
+    // Shielder ring
     if (m.bossShield > 0) {
       ctx.strokeStyle = '#bdbdbd'; ctx.lineWidth = 4;
-      ctx.beginPath(); ctx.arc(x, y, 40 + Math.sin(t * 6) * 3, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(x, y, 42 + Math.sin(t * 6) * 3, 0, Math.PI * 2); ctx.stroke();
       ctx.lineWidth = 1;
     }
-    // Name
+    // Name + HP bar
     ctx.fillStyle = '#fff';
     ctx.font = 'bold 13px sans-serif'; ctx.textAlign = 'center';
     ctx.strokeStyle = '#000'; ctx.lineWidth = 3;
-    ctx.strokeText(m.bossName, x, y - 48);
-    ctx.fillText(m.bossName, x, y - 48);
-    // HP bar
-    ctx.fillStyle = '#333'; ctx.fillRect(x - 60, y - 62, 120, 8);
-    ctx.fillStyle = '#ff1744'; ctx.fillRect(x - 60, y - 62, 120 * (m.bossHp / m.bossMaxHp), 8);
-    ctx.strokeStyle = '#000'; ctx.strokeRect(x - 60, y - 62, 120, 8);
+    ctx.strokeText(m.bossName, x, y - 52);
+    ctx.fillText(m.bossName, x, y - 52);
+    ctx.fillStyle = '#333'; ctx.fillRect(x - 60, y - 68, 120, 8);
+    ctx.fillStyle = '#ff1744'; ctx.fillRect(x - 60, y - 68, 120 * (m.bossHp / m.bossMaxHp), 8);
+    ctx.strokeStyle = '#000'; ctx.strokeRect(x - 60, y - 68, 120, 8);
     ctx.textAlign = 'left'; ctx.lineWidth = 1;
   }
+
+  // Each shape is a separate draw routine — each has distinct silhouette.
+  const BOSS_SHAPE_DRAWS = {
+    slime_king: (ctx, x, y, m, t, pulse) => {
+      ctx.fillStyle = m.bossColor;
+      ctx.beginPath(); ctx.ellipse(x, y + 4, 30 + pulse, 22 - pulse, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.beginPath(); ctx.arc(x - 10, y - 4, 5, 0, Math.PI * 2); ctx.arc(x + 10, y - 4, 5, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#000';
+      ctx.beginPath(); ctx.arc(x - 10, y - 4, 2, 0, Math.PI * 2); ctx.arc(x + 10, y - 4, 2, 0, Math.PI * 2); ctx.fill();
+      // Crown
+      ctx.fillStyle = '#fbc02d';
+      ctx.beginPath();
+      ctx.moveTo(x - 14, y - 18); ctx.lineTo(x - 8, y - 26); ctx.lineTo(x - 4, y - 18);
+      ctx.lineTo(x, y - 26); ctx.lineTo(x + 4, y - 18); ctx.lineTo(x + 8, y - 26);
+      ctx.lineTo(x + 14, y - 18); ctx.closePath(); ctx.fill();
+    },
+    stone_titan: (ctx, x, y, m, t) => {
+      ctx.fillStyle = m.bossColor;
+      ctx.fillRect(x - 26, y - 12, 52, 36);
+      ctx.fillRect(x - 14, y - 32, 28, 22);
+      ctx.strokeStyle = '#000'; ctx.lineWidth = 2;
+      ctx.strokeRect(x - 26, y - 12, 52, 36); ctx.strokeRect(x - 14, y - 32, 28, 22);
+      ctx.fillStyle = '#ff1744';
+      ctx.beginPath(); ctx.arc(x - 6, y - 22, 2, 0, Math.PI * 2); ctx.arc(x + 6, y - 22, 2, 0, Math.PI * 2); ctx.fill();
+      ctx.lineWidth = 1;
+    },
+    hollow_queen: (ctx, x, y, m, t, pulse) => {
+      ctx.fillStyle = m.bossColor; ctx.globalAlpha = 0.85;
+      ctx.beginPath();
+      ctx.moveTo(x - 20, y - 22); ctx.lineTo(x + 20, y - 22);
+      ctx.lineTo(x + 26, y + 24 + pulse); ctx.lineTo(x, y + 32 + pulse);
+      ctx.lineTo(x - 26, y + 24 + pulse); ctx.closePath(); ctx.fill();
+      ctx.globalAlpha = 1;
+      // Crown points
+      ctx.fillStyle = '#fbc02d';
+      ctx.beginPath();
+      ctx.moveTo(x - 18, y - 22); ctx.lineTo(x - 8, y - 34); ctx.lineTo(x, y - 22);
+      ctx.lineTo(x + 8, y - 34); ctx.lineTo(x + 18, y - 22); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.beginPath(); ctx.arc(x - 6, y - 6, 3, 0, Math.PI * 2); ctx.arc(x + 6, y - 6, 3, 0, Math.PI * 2); ctx.fill();
+    },
+    glacier_lord: (ctx, x, y, m, t) => {
+      ctx.fillStyle = m.bossColor;
+      ctx.beginPath();
+      ctx.moveTo(x, y - 30); ctx.lineTo(x + 28, y - 5); ctx.lineTo(x + 20, y + 26);
+      ctx.lineTo(x - 20, y + 26); ctx.lineTo(x - 28, y - 5); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.globalAlpha = 0.5;
+      for (let i = 0; i < 4; i++) {
+        const a = (i / 4) * Math.PI * 2 + t * 0.5;
+        ctx.beginPath(); ctx.arc(x + Math.cos(a) * 18, y + Math.sin(a) * 14, 4, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = '#01579b';
+      ctx.beginPath(); ctx.arc(x - 6, y - 8, 2, 0, Math.PI * 2); ctx.arc(x + 6, y - 8, 2, 0, Math.PI * 2); ctx.fill();
+    },
+    world_tree: (ctx, x, y, m, t, pulse) => {
+      // Trunk
+      ctx.fillStyle = '#5d4037'; ctx.fillRect(x - 10, y - 4, 20, 32);
+      // Canopy
+      ctx.fillStyle = m.bossColor;
+      ctx.beginPath(); ctx.arc(x - 16, y - 12, 16, 0, Math.PI * 2);
+      ctx.arc(x + 16, y - 12, 16, 0, Math.PI * 2);
+      ctx.arc(x, y - 22, 18 + pulse, 0, Math.PI * 2); ctx.fill();
+      // Glowing eyes in the trunk
+      ctx.fillStyle = '#fbc02d';
+      ctx.beginPath(); ctx.arc(x - 4, y + 6, 2, 0, Math.PI * 2); ctx.arc(x + 4, y + 6, 2, 0, Math.PI * 2); ctx.fill();
+    },
+    storm_king: (ctx, x, y, m, t, pulse) => {
+      ctx.fillStyle = m.bossColor; ctx.globalAlpha = 0.9;
+      ctx.beginPath(); ctx.arc(x, y, 26 + pulse, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 1;
+      // Lightning bolts
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 3;
+      for (let i = 0; i < 4; i++) {
+        const a = (i / 4) * Math.PI * 2 + t * 2;
+        const sx = x + Math.cos(a) * 14, sy = y + Math.sin(a) * 14;
+        const ex = x + Math.cos(a) * 30, ey = y + Math.sin(a) * 30;
+        ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(ex, ey); ctx.stroke();
+      }
+      ctx.lineWidth = 1;
+      ctx.fillStyle = '#1a237e';
+      ctx.beginPath(); ctx.arc(x - 4, y - 4, 3, 0, Math.PI * 2); ctx.arc(x + 4, y - 4, 3, 0, Math.PI * 2); ctx.fill();
+    },
+    magma_lord: (ctx, x, y, m, t, pulse) => {
+      ctx.fillStyle = m.bossColor;
+      ctx.beginPath(); ctx.arc(x, y, 28, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#ffd54f'; ctx.globalAlpha = 0.6 + Math.sin(t * 4) * 0.2;
+      ctx.beginPath(); ctx.arc(x, y, 18, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 1;
+      // Spikes around
+      ctx.fillStyle = m.bossColor;
+      for (let i = 0; i < 8; i++) {
+        const a = (i / 8) * Math.PI * 2;
+        ctx.beginPath();
+        ctx.moveTo(x + Math.cos(a) * 28, y + Math.sin(a) * 28);
+        ctx.lineTo(x + Math.cos(a) * 38, y + Math.sin(a) * 38);
+        ctx.lineTo(x + Math.cos(a + 0.2) * 28, y + Math.sin(a + 0.2) * 28);
+        ctx.closePath(); ctx.fill();
+      }
+      ctx.fillStyle = '#000';
+      ctx.beginPath(); ctx.arc(x - 5, y - 5, 2, 0, Math.PI * 2); ctx.arc(x + 5, y - 5, 2, 0, Math.PI * 2); ctx.fill();
+    },
+    iron_giant: (ctx, x, y, m, t) => {
+      ctx.fillStyle = m.bossColor;
+      ctx.fillRect(x - 30, y - 10, 60, 36);
+      ctx.fillRect(x - 16, y - 32, 32, 22);
+      // Rivets
+      ctx.fillStyle = '#5d4037';
+      for (let i = -2; i <= 2; i++) {
+        ctx.beginPath(); ctx.arc(x + i * 12, y + 2, 2, 0, Math.PI * 2); ctx.fill();
+      }
+      // Visor
+      ctx.fillStyle = '#ff1744';
+      ctx.fillRect(x - 12, y - 22, 24, 4);
+      ctx.strokeStyle = '#000'; ctx.lineWidth = 2;
+      ctx.strokeRect(x - 30, y - 10, 60, 36); ctx.strokeRect(x - 16, y - 32, 32, 22);
+      ctx.lineWidth = 1;
+    },
+    void_eye: (ctx, x, y, m, t, pulse) => {
+      ctx.fillStyle = m.bossColor;
+      ctx.beginPath(); ctx.arc(x, y, 34 + pulse, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.beginPath(); ctx.arc(x, y, 22, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#000';
+      ctx.beginPath(); ctx.arc(x, y, 12, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#ff1744';
+      ctx.beginPath(); ctx.arc(x, y, 6, 0, Math.PI * 2); ctx.fill();
+      // Floating runes
+      ctx.fillStyle = m.bossColor;
+      for (let i = 0; i < 6; i++) {
+        const a = (i / 6) * Math.PI * 2 + t * 0.4;
+        const rx = x + Math.cos(a) * 40, ry = y + Math.sin(a) * 40;
+        ctx.fillRect(rx - 2, ry - 2, 4, 4);
+      }
+    },
+    krezcent: (ctx, x, y, m, t, pulse) => {
+      // Sprawling demon-king look
+      ctx.fillStyle = m.bossColor;
+      ctx.beginPath(); ctx.arc(x, y, 32, 0, Math.PI * 2); ctx.fill();
+      // Crescent horns
+      ctx.fillStyle = '#000';
+      ctx.beginPath();
+      ctx.moveTo(x - 24, y - 10); ctx.quadraticCurveTo(x - 32, y - 36, x - 12, y - 24); ctx.closePath(); ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(x + 24, y - 10); ctx.quadraticCurveTo(x + 32, y - 36, x + 12, y - 24); ctx.closePath(); ctx.fill();
+      // Glowing crescent on chest
+      ctx.strokeStyle = '#fff176'; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(x, y + 6, 12, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke();
+      ctx.lineWidth = 1;
+      // Burning eyes
+      ctx.fillStyle = '#fff176'; ctx.shadowColor = '#ff1744'; ctx.shadowBlur = 10;
+      ctx.beginPath(); ctx.arc(x - 8, y - 6, 3, 0, Math.PI * 2); ctx.arc(x + 8, y - 6, 3, 0, Math.PI * 2); ctx.fill();
+      ctx.shadowBlur = 0;
+    },
+    sprout_avatar: (ctx, x, y, m, t) => {
+      ctx.fillStyle = m.bossColor;
+      ctx.beginPath(); ctx.arc(x, y, 22, 0, Math.PI * 2); ctx.fill();
+      // Vines extending
+      ctx.strokeStyle = '#558b2f'; ctx.lineWidth = 3;
+      for (let i = 0; i < 5; i++) {
+        const a = (i / 5) * Math.PI * 2;
+        ctx.beginPath();
+        ctx.moveTo(x + Math.cos(a) * 22, y + Math.sin(a) * 22);
+        ctx.quadraticCurveTo(x + Math.cos(a) * 32 + Math.sin(t * 2 + i) * 5, y + Math.sin(a) * 32, x + Math.cos(a) * 42, y + Math.sin(a) * 42);
+        ctx.stroke();
+      }
+      ctx.lineWidth = 1;
+      // Flower face
+      ctx.fillStyle = '#fff';
+      ctx.beginPath(); ctx.arc(x - 5, y - 3, 2, 0, Math.PI * 2); ctx.arc(x + 5, y - 3, 2, 0, Math.PI * 2); ctx.fill();
+    },
+    cave_brute: (ctx, x, y, m, t) => {
+      ctx.fillStyle = m.bossColor;
+      ctx.beginPath(); ctx.ellipse(x, y + 4, 28, 22, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(x, y - 14, 14, 0, Math.PI * 2); ctx.fill();
+      // Tusks
+      ctx.fillStyle = '#fff';
+      ctx.beginPath(); ctx.moveTo(x - 6, y - 6); ctx.lineTo(x - 8, y + 6); ctx.lineTo(x - 4, y + 6); ctx.closePath(); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(x + 6, y - 6); ctx.lineTo(x + 8, y + 6); ctx.lineTo(x + 4, y + 6); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#ff1744';
+      ctx.beginPath(); ctx.arc(x - 5, y - 16, 2, 0, Math.PI * 2); ctx.arc(x + 5, y - 16, 2, 0, Math.PI * 2); ctx.fill();
+    },
+    spider_matron: (ctx, x, y, m, t) => {
+      ctx.fillStyle = m.bossColor;
+      ctx.beginPath(); ctx.arc(x, y + 8, 22, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(x, y - 10, 14, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = m.bossColor; ctx.lineWidth = 5;
+      for (let i = -3; i <= 3; i++) {
+        if (i === 0) continue;
+        const a = (i / 4) * 0.9;
+        ctx.beginPath();
+        ctx.moveTo(x, y + 8);
+        ctx.lineTo(x + Math.cos(a) * 36, y + 8 + Math.sin(a) * 20);
+        ctx.stroke();
+      }
+      ctx.lineWidth = 1;
+      // 4 eyes
+      ctx.fillStyle = '#ff1744';
+      ctx.beginPath();
+      ctx.arc(x - 6, y - 10, 2, 0, Math.PI * 2); ctx.arc(x - 2, y - 14, 2, 0, Math.PI * 2);
+      ctx.arc(x + 2, y - 14, 2, 0, Math.PI * 2); ctx.arc(x + 6, y - 10, 2, 0, Math.PI * 2);
+      ctx.fill();
+    },
+    ember_specter: (ctx, x, y, m, t, pulse) => {
+      ctx.fillStyle = m.bossColor; ctx.globalAlpha = 0.85;
+      ctx.beginPath();
+      ctx.moveTo(x - 18, y - 18); ctx.quadraticCurveTo(x, y - 30, x + 18, y - 18);
+      ctx.lineTo(x + 14, y + 20 + pulse); ctx.lineTo(x - 14, y + 20 + pulse); ctx.closePath(); ctx.fill();
+      ctx.globalAlpha = 1;
+      // Burning eyes
+      ctx.fillStyle = '#ffd54f'; ctx.shadowColor = '#ff5722'; ctx.shadowBlur = 12;
+      ctx.beginPath(); ctx.arc(x - 6, y - 6, 3, 0, Math.PI * 2); ctx.arc(x + 6, y - 6, 3, 0, Math.PI * 2); ctx.fill();
+      ctx.shadowBlur = 0;
+    },
+    tide_serpent: (ctx, x, y, m, t) => {
+      ctx.fillStyle = m.bossColor;
+      for (let i = 0; i < 6; i++) {
+        const r = 20 - i * 2.5;
+        const oy = Math.sin(t * 3 + i) * 5;
+        ctx.beginPath(); ctx.arc(x, y + oy, r, 0, Math.PI * 2); ctx.fill();
+      }
+      // Fin
+      ctx.fillStyle = '#01579b';
+      ctx.beginPath();
+      ctx.moveTo(x - 14, y - 22); ctx.lineTo(x, y - 32); ctx.lineTo(x + 14, y - 22);
+      ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#ff1744';
+      ctx.beginPath(); ctx.arc(x - 5, y - 8, 2.5, 0, Math.PI * 2); ctx.arc(x + 5, y - 8, 2.5, 0, Math.PI * 2); ctx.fill();
+    },
+    frost_titan: (ctx, x, y, m, t) => {
+      ctx.fillStyle = m.bossColor;
+      ctx.fillRect(x - 24, y - 8, 48, 32);
+      ctx.fillRect(x - 12, y - 28, 24, 20);
+      // Ice spikes on shoulders
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.moveTo(x - 24, y - 8); ctx.lineTo(x - 30, y - 22); ctx.lineTo(x - 18, y - 10); ctx.closePath();
+      ctx.moveTo(x + 24, y - 8); ctx.lineTo(x + 30, y - 22); ctx.lineTo(x + 18, y - 10); ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = '#03a9f4';
+      ctx.beginPath(); ctx.arc(x - 5, y - 18, 2, 0, Math.PI * 2); ctx.arc(x + 5, y - 18, 2, 0, Math.PI * 2); ctx.fill();
+    },
+    mire_hag: (ctx, x, y, m, t, pulse) => {
+      ctx.fillStyle = m.bossColor; ctx.globalAlpha = 0.85;
+      ctx.beginPath();
+      ctx.moveTo(x - 22, y + 20); ctx.lineTo(x - 12, y - 22); ctx.lineTo(x + 12, y - 22);
+      ctx.lineTo(x + 22, y + 20); ctx.closePath(); ctx.fill();
+      ctx.globalAlpha = 1;
+      // Hat
+      ctx.fillStyle = '#311b92';
+      ctx.beginPath();
+      ctx.moveTo(x - 12, y - 22); ctx.lineTo(x, y - 38); ctx.lineTo(x + 12, y - 22); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#ffeb3b';
+      ctx.beginPath(); ctx.arc(x - 5, y - 12, 2, 0, Math.PI * 2); ctx.arc(x + 5, y - 12, 2, 0, Math.PI * 2); ctx.fill();
+    },
+    blood_beast: (ctx, x, y, m, t, pulse) => {
+      ctx.fillStyle = m.bossColor;
+      ctx.beginPath(); ctx.ellipse(x, y + 8, 30, 18, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(x + 18, y - 4, 12, 0, Math.PI * 2); ctx.fill();
+      // Teeth
+      ctx.fillStyle = '#fff';
+      for (let i = 0; i < 4; i++) {
+        ctx.beginPath();
+        ctx.moveTo(x + 12 + i * 3, y - 4); ctx.lineTo(x + 14 + i * 3, y + 2); ctx.lineTo(x + 16 + i * 3, y - 4);
+        ctx.closePath(); ctx.fill();
+      }
+      ctx.fillStyle = '#ff1744';
+      ctx.beginPath(); ctx.arc(x + 20, y - 8, 3, 0, Math.PI * 2); ctx.fill();
+    },
+    phantom_bishop: (ctx, x, y, m, t, pulse) => {
+      ctx.fillStyle = m.bossColor; ctx.globalAlpha = 0.85;
+      ctx.beginPath();
+      ctx.moveTo(x - 16, y + 26); ctx.lineTo(x - 12, y - 24);
+      ctx.lineTo(x + 12, y - 24); ctx.lineTo(x + 16, y + 26); ctx.closePath(); ctx.fill();
+      ctx.globalAlpha = 1;
+      // Mitre hat
+      ctx.fillStyle = m.bossColor;
+      ctx.beginPath();
+      ctx.moveTo(x - 12, y - 24); ctx.lineTo(x, y - 38); ctx.lineTo(x + 12, y - 24); ctx.closePath(); ctx.fill();
+      // Cross
+      ctx.fillStyle = '#fbc02d';
+      ctx.fillRect(x - 2, y - 34, 4, 12); ctx.fillRect(x - 6, y - 30, 12, 4);
+      ctx.fillStyle = '#fff';
+      ctx.beginPath(); ctx.arc(x - 4, y - 10, 2, 0, Math.PI * 2); ctx.arc(x + 4, y - 10, 2, 0, Math.PI * 2); ctx.fill();
+    },
+    toxin_spider: (ctx, x, y, m, t) => {
+      ctx.fillStyle = m.bossColor;
+      ctx.beginPath(); ctx.arc(x, y + 6, 20, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(x, y - 8, 12, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = '#558b2f'; ctx.lineWidth = 4;
+      for (let i = -3; i <= 3; i++) {
+        if (i === 0) continue;
+        const a = (i / 4) * 0.9;
+        ctx.beginPath();
+        ctx.moveTo(x, y + 6);
+        ctx.lineTo(x + Math.cos(a) * 32, y + 6 + Math.sin(a) * 18);
+        ctx.stroke();
+      }
+      ctx.lineWidth = 1;
+      // Acidic drip
+      ctx.fillStyle = '#9ccc65'; ctx.globalAlpha = 0.6 + Math.sin(t * 4) * 0.3;
+      ctx.beginPath(); ctx.arc(x, y + 26, 4, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = '#ff1744';
+      ctx.beginPath(); ctx.arc(x - 4, y - 8, 2, 0, Math.PI * 2); ctx.arc(x + 4, y - 8, 2, 0, Math.PI * 2); ctx.fill();
+    },
+    inferno_wyrm: (ctx, x, y, m, t, pulse) => {
+      ctx.fillStyle = m.bossColor;
+      // Long serpentine body
+      for (let i = 0; i < 7; i++) {
+        const r = 18 - i * 2;
+        const oy = Math.sin(t * 2 + i * 0.6) * 6;
+        ctx.beginPath(); ctx.arc(x + i * 3, y + oy, r, 0, Math.PI * 2); ctx.fill();
+      }
+      // Mane
+      ctx.fillStyle = '#ffd54f';
+      for (let i = 0; i < 5; i++) {
+        ctx.beginPath();
+        ctx.moveTo(x - 8 + i * 2, y - 14);
+        ctx.lineTo(x - 12 + i * 2, y - 26 - i);
+        ctx.lineTo(x - 4 + i * 2, y - 14);
+        ctx.closePath(); ctx.fill();
+      }
+      ctx.fillStyle = '#fff';
+      ctx.beginPath(); ctx.arc(x + 16, y - 8, 3, 0, Math.PI * 2); ctx.fill();
+    },
+    light_avatar: (ctx, x, y, m, t, pulse) => {
+      ctx.fillStyle = m.bossColor; ctx.shadowColor = '#ffffff'; ctx.shadowBlur = 20;
+      ctx.fillRect(x - 18, y - 4, 36, 28);
+      ctx.beginPath(); ctx.arc(x, y - 14, 14, 0, Math.PI * 2); ctx.fill();
+      ctx.shadowBlur = 0;
+      // Halo
+      ctx.strokeStyle = '#ffd54f'; ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.arc(x, y - 24, 18 + pulse * 0.5, 0, Math.PI * 2); ctx.stroke();
+      ctx.lineWidth = 1;
+      // Wings
+      ctx.fillStyle = '#fff'; ctx.globalAlpha = 0.7;
+      ctx.beginPath();
+      ctx.moveTo(x - 18, y); ctx.lineTo(x - 38, y - 10); ctx.lineTo(x - 18, y + 12); ctx.closePath();
+      ctx.moveTo(x + 18, y); ctx.lineTo(x + 38, y - 10); ctx.lineTo(x + 18, y + 12); ctx.closePath();
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = '#fbc02d';
+      ctx.beginPath(); ctx.arc(x - 4, y - 14, 2, 0, Math.PI * 2); ctx.arc(x + 4, y - 14, 2, 0, Math.PI * 2); ctx.fill();
+    },
+    chrono_phantom: (ctx, x, y, m, t, pulse) => {
+      // Hourglass body
+      ctx.fillStyle = m.bossColor;
+      ctx.beginPath();
+      ctx.moveTo(x - 22, y - 24); ctx.lineTo(x + 22, y - 24); ctx.lineTo(x + 4, y); ctx.lineTo(x + 22, y + 24);
+      ctx.lineTo(x - 22, y + 24); ctx.lineTo(x - 4, y); ctx.closePath(); ctx.fill();
+      // Clock face
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(x, y - 4, 8, 0, Math.PI * 2); ctx.stroke();
+      // Hands
+      const ang1 = t * 0.5;
+      const ang2 = t * 0.1;
+      ctx.beginPath(); ctx.moveTo(x, y - 4); ctx.lineTo(x + Math.cos(ang1) * 6, y - 4 + Math.sin(ang1) * 6); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x, y - 4); ctx.lineTo(x + Math.cos(ang2) * 4, y - 4 + Math.sin(ang2) * 4); ctx.stroke();
+      ctx.lineWidth = 1;
+    },
+    scarab_lord: (ctx, x, y, m, t) => {
+      ctx.fillStyle = m.bossColor;
+      // Big oval carapace
+      ctx.beginPath(); ctx.ellipse(x, y + 4, 30, 20, 0, 0, Math.PI * 2); ctx.fill();
+      // Seam down the middle
+      ctx.strokeStyle = '#5d4037'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(x, y - 16); ctx.lineTo(x, y + 24); ctx.stroke();
+      ctx.lineWidth = 1;
+      // Mandibles
+      ctx.fillStyle = '#3e2723';
+      ctx.beginPath(); ctx.moveTo(x - 14, y - 12); ctx.lineTo(x - 20, y - 24); ctx.lineTo(x - 8, y - 16); ctx.closePath(); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(x + 14, y - 12); ctx.lineTo(x + 20, y - 24); ctx.lineTo(x + 8, y - 16); ctx.closePath(); ctx.fill();
+      // Eyes
+      ctx.fillStyle = '#ff1744';
+      ctx.beginPath(); ctx.arc(x - 6, y - 6, 2, 0, Math.PI * 2); ctx.arc(x + 6, y - 6, 2, 0, Math.PI * 2); ctx.fill();
+    },
+    dust_djinn: (ctx, x, y, m, t, pulse) => {
+      ctx.fillStyle = m.bossColor; ctx.globalAlpha = 0.85;
+      // Swirling lower body (no legs)
+      for (let i = 0; i < 8; i++) {
+        const a = (i / 8) * Math.PI * 2 + t * 1.2;
+        ctx.beginPath();
+        ctx.ellipse(x + Math.cos(a) * 16, y + 18 + Math.sin(a) * 6, 8, 4, a, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+      // Upper torso
+      ctx.fillStyle = m.bossColor;
+      ctx.fillRect(x - 14, y - 8, 28, 22);
+      ctx.beginPath(); ctx.arc(x, y - 18, 12, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.beginPath(); ctx.arc(x - 4, y - 18, 2, 0, Math.PI * 2); ctx.arc(x + 4, y - 18, 2, 0, Math.PI * 2); ctx.fill();
+    },
+    wisp_swarm: (ctx, x, y, m, t) => {
+      // Multiple small orbs swirling
+      ctx.fillStyle = m.bossColor; ctx.shadowColor = m.bossColor; ctx.shadowBlur = 12;
+      for (let i = 0; i < 9; i++) {
+        const a = (i / 9) * Math.PI * 2 + t * 1.0;
+        const r = 16 + Math.sin(t * 2 + i) * 8;
+        ctx.beginPath(); ctx.arc(x + Math.cos(a) * r, y + Math.sin(a) * r, 6, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = '#fff';
+      ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI * 2); ctx.fill();
+    },
+    fungal_horror: (ctx, x, y, m, t, pulse) => {
+      // Mushroom-style stalk
+      ctx.fillStyle = '#5d4037';
+      ctx.fillRect(x - 8, y - 4, 16, 28);
+      // Cap
+      ctx.fillStyle = m.bossColor;
+      ctx.beginPath();
+      ctx.arc(x, y - 8, 24 + pulse, Math.PI, Math.PI * 2);
+      ctx.lineTo(x + 24, y - 8); ctx.lineTo(x - 24, y - 8); ctx.closePath(); ctx.fill();
+      // Spots
+      ctx.fillStyle = '#fff';
+      ctx.beginPath(); ctx.arc(x - 10, y - 14, 4, 0, Math.PI * 2);
+      ctx.arc(x + 8, y - 16, 3, 0, Math.PI * 2);
+      ctx.arc(x, y - 22, 3, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#ff1744';
+      ctx.beginPath(); ctx.arc(x - 3, y + 4, 1.5, 0, Math.PI * 2); ctx.arc(x + 3, y + 4, 1.5, 0, Math.PI * 2); ctx.fill();
+    },
+  };
 
   function drawPlayer(ctx, x, y, c, p) {
     ctx.fillStyle = 'rgba(0,0,0,0.3)';
@@ -1816,165 +2140,86 @@ function KrezcentQuest() {
         ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(tipx, tipy); ctx.stroke();
         const [gxa, gya] = px(8, -6); const [gxb, gyb] = px(8, 6);
         ctx.strokeStyle = '#fbc02d'; ctx.lineWidth = 3;
-        ctx.beginPath(); ctx.moveTo(gxa, gya); ctx.lineTo(gxb, gyb); ctx.stroke();
-        break;
+        ctx.beginPath(); ctx.moveTo(gxa, gya); ctx.lineTo(gxb, gyb); ctx.stroke(); break;
       }
-      case 'katana': {
-        const [hx, hy] = px(8, 0); const [tipx, tipy] = px(38, -2);
+      case 'katana': { const [hx, hy] = px(8, 0); const [tipx, tipy] = px(38, -2);
         ctx.strokeStyle = '#ff5252'; ctx.lineWidth = 4; ctx.lineCap = 'round';
-        ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(tipx, tipy); ctx.stroke();
-        break;
-      }
-      case 'knife': {
-        const [hx, hy] = px(8, 0); const [tipx, tipy] = px(22, 0);
+        ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(tipx, tipy); ctx.stroke(); break; }
+      case 'knife': { const [hx, hy] = px(8, 0); const [tipx, tipy] = px(22, 0);
         ctx.strokeStyle = '#e0e0e0'; ctx.lineWidth = 3; ctx.lineCap = 'round';
         ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(tipx, tipy); ctx.stroke();
         const [gxa, gya] = px(8, -3); const [gxb, gyb] = px(8, 3);
         ctx.strokeStyle = '#5d4037'; ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.moveTo(gxa, gya); ctx.lineTo(gxb, gyb); ctx.stroke();
-        break;
-      }
-      case 'bow': {
-        const [cx, cy] = px(20, 0);
+        ctx.beginPath(); ctx.moveTo(gxa, gya); ctx.lineTo(gxb, gyb); ctx.stroke(); break; }
+      case 'bow': { const [cx, cy] = px(20, 0);
         ctx.strokeStyle = '#8b6f47'; ctx.lineWidth = 3;
         ctx.beginPath(); ctx.arc(cx, cy, 12, dir - Math.PI / 2.2, dir + Math.PI / 2.2); ctx.stroke();
         const [s1x, s1y] = px(20, -10); const [s2x, s2y] = px(20, 10);
         ctx.strokeStyle = '#fff'; ctx.lineWidth = 1;
-        ctx.beginPath(); ctx.moveTo(s1x, s1y); ctx.lineTo(s2x, s2y); ctx.stroke();
-        break;
-      }
-      case 'crossbow': {
-        const [cx, cy] = px(14, 0);
+        ctx.beginPath(); ctx.moveTo(s1x, s1y); ctx.lineTo(s2x, s2y); ctx.stroke(); break; }
+      case 'crossbow': { const [cx, cy] = px(14, 0);
         ctx.fillStyle = '#5d4037'; ctx.fillRect(cx - 4, cy - 2, 16, 4);
         const [bx1, by1] = px(18, -10); const [bx2, by2] = px(18, 10);
         ctx.strokeStyle = '#8b6f47'; ctx.lineWidth = 3;
-        ctx.beginPath(); ctx.moveTo(bx1, by1); ctx.lineTo(bx2, by2); ctx.stroke();
-        break;
-      }
-      case 'shield': {
-        const [cx, cy] = px(20, 0);
+        ctx.beginPath(); ctx.moveTo(bx1, by1); ctx.lineTo(bx2, by2); ctx.stroke(); break; }
+      case 'shield': { const [cx, cy] = px(20, 0);
         ctx.fillStyle = '#5d4037'; ctx.beginPath(); ctx.arc(cx, cy, 11, 0, Math.PI * 2); ctx.fill();
-        ctx.fillStyle = '#9e9e9e'; ctx.beginPath(); ctx.arc(cx, cy, 8, 0, Math.PI * 2); ctx.fill();
-        for (let i = 0; i < 6; i++) {
-          const a = dir + (i / 6) * Math.PI * 2;
-          const tx = cx + Math.cos(a) * 13, ty = cy + Math.sin(a) * 13;
-          ctx.fillStyle = '#bdbdbd';
-          ctx.beginPath(); ctx.arc(tx, ty, 2.5, 0, Math.PI * 2); ctx.fill();
-        }
-        break;
-      }
-      case 'spear': {
-        const [hx, hy] = px(6, 0); const [tipx, tipy] = px(42, 0);
+        ctx.fillStyle = '#9e9e9e'; ctx.beginPath(); ctx.arc(cx, cy, 8, 0, Math.PI * 2); ctx.fill(); break; }
+      case 'spear': { const [hx, hy] = px(6, 0); const [tipx, tipy] = px(42, 0);
         ctx.strokeStyle = '#8b6f47'; ctx.lineWidth = 3;
         ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(tipx, tipy); ctx.stroke();
         const [pt1x, pt1y] = px(46, 0); const [pt2x, pt2y] = px(38, -4); const [pt3x, pt3y] = px(38, 4);
         ctx.fillStyle = '#d8d8e0';
-        ctx.beginPath(); ctx.moveTo(pt1x, pt1y); ctx.lineTo(pt2x, pt2y); ctx.lineTo(pt3x, pt3y); ctx.closePath(); ctx.fill();
-        break;
-      }
-      case 'axe': {
-        const [hx, hy] = px(8, 0); const [tx, ty] = px(28, 0);
+        ctx.beginPath(); ctx.moveTo(pt1x, pt1y); ctx.lineTo(pt2x, pt2y); ctx.lineTo(pt3x, pt3y); ctx.closePath(); ctx.fill(); break; }
+      case 'axe': { const [hx, hy] = px(8, 0); const [tx, ty] = px(28, 0);
         ctx.strokeStyle = '#5d4037'; ctx.lineWidth = 4;
         ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(tx, ty); ctx.stroke();
         const [a1x, a1y] = px(24, -10); const [a2x, a2y] = px(34, -2);
         const [a3x, a3y] = px(34, 2); const [a4x, a4y] = px(24, 10);
         ctx.fillStyle = '#9e9e9e';
-        ctx.beginPath(); ctx.moveTo(a1x, a1y); ctx.lineTo(a2x, a2y); ctx.lineTo(a3x, a3y); ctx.lineTo(a4x, a4y); ctx.closePath(); ctx.fill();
-        break;
-      }
-      case 'morningstar': {
-        const [hx, hy] = px(8, 0); const [bx, by] = px(28, 0);
+        ctx.beginPath(); ctx.moveTo(a1x, a1y); ctx.lineTo(a2x, a2y); ctx.lineTo(a3x, a3y); ctx.lineTo(a4x, a4y); ctx.closePath(); ctx.fill(); break; }
+      case 'morningstar': { const [hx, hy] = px(8, 0); const [bx, by] = px(28, 0);
         ctx.strokeStyle = '#5d4037'; ctx.lineWidth = 3;
         ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(bx, by); ctx.stroke();
-        ctx.fillStyle = '#616161';
-        ctx.beginPath(); ctx.arc(bx, by, 7, 0, Math.PI * 2); ctx.fill();
-        for (let i = 0; i < 8; i++) {
-          const a = (i / 8) * Math.PI * 2;
-          const sx = bx + Math.cos(a) * 10, sy = by + Math.sin(a) * 10;
-          ctx.fillStyle = '#9e9e9e';
-          ctx.beginPath(); ctx.arc(sx, sy, 2, 0, Math.PI * 2); ctx.fill();
-        }
-        break;
-      }
-      case 'hammer': {
-        const [hx, hy] = px(8, 0); const [tx, ty] = px(26, 0);
+        ctx.fillStyle = '#616161'; ctx.beginPath(); ctx.arc(bx, by, 7, 0, Math.PI * 2); ctx.fill(); break; }
+      case 'hammer': { const [hx, hy] = px(8, 0); const [tx, ty] = px(26, 0);
         ctx.strokeStyle = '#5d4037'; ctx.lineWidth = 4;
         ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(tx, ty); ctx.stroke();
         const [h1x, h1y] = px(22, -8); const [h2x, h2y] = px(32, -8);
         const [h3x, h3y] = px(32, 8); const [h4x, h4y] = px(22, 8);
         ctx.fillStyle = '#8d8d8d';
-        ctx.beginPath(); ctx.moveTo(h1x, h1y); ctx.lineTo(h2x, h2y); ctx.lineTo(h3x, h3y); ctx.lineTo(h4x, h4y); ctx.closePath(); ctx.fill();
-        break;
-      }
-      case 'scythe': {
-        const [hx, hy] = px(8, 0); const [tx, ty] = px(34, -2);
+        ctx.beginPath(); ctx.moveTo(h1x, h1y); ctx.lineTo(h2x, h2y); ctx.lineTo(h3x, h3y); ctx.lineTo(h4x, h4y); ctx.closePath(); ctx.fill(); break; }
+      case 'scythe': { const [hx, hy] = px(8, 0); const [tx, ty] = px(34, -2);
         ctx.strokeStyle = '#5d4037'; ctx.lineWidth = 3;
         ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(tx, ty); ctx.stroke();
         ctx.strokeStyle = '#9e9e9e'; ctx.lineWidth = 3;
-        ctx.beginPath();
-        const [sx, sy] = px(34, -2);
-        ctx.moveTo(sx, sy);
-        const [s2x, s2y] = px(28, -16);
-        const [s3x, s3y] = px(16, -18);
-        ctx.quadraticCurveTo(s2x, s2y, s3x, s3y);
-        ctx.stroke();
-        break;
-      }
-      case 'staff': {
-        const [hx, hy] = px(6, 0); const [tx, ty] = px(34, 0);
+        const [sx, sy] = px(34, -2); const [s2x, s2y] = px(28, -16); const [s3x, s3y] = px(16, -18);
+        ctx.beginPath(); ctx.moveTo(sx, sy); ctx.quadraticCurveTo(s2x, s2y, s3x, s3y); ctx.stroke(); break; }
+      case 'staff': { const [hx, hy] = px(6, 0); const [tx, ty] = px(34, 0);
         ctx.strokeStyle = '#6d4c41'; ctx.lineWidth = 4;
         ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(tx, ty); ctx.stroke();
-        ctx.fillStyle = '#9c27b0';
-        ctx.shadowColor = '#ce93d8'; ctx.shadowBlur = 12;
-        ctx.beginPath(); ctx.arc(tx, ty, 5, 0, Math.PI * 2); ctx.fill();
-        ctx.shadowBlur = 0;
-        break;
-      }
-      case 'whip': {
-        ctx.strokeStyle = '#5d4037'; ctx.lineWidth = 2.5;
-        ctx.beginPath();
-        const [a1x, a1y] = px(8, 0);
-        const [a2x, a2y] = px(18, -6);
-        const [a3x, a3y] = px(28, 4);
-        const [a4x, a4y] = px(40, -3);
-        ctx.moveTo(a1x, a1y);
-        ctx.bezierCurveTo(a2x, a2y, a3x, a3y, a4x, a4y);
-        ctx.stroke();
-        break;
-      }
-      case 'chain': {
-        ctx.strokeStyle = '#9e9e9e'; ctx.lineWidth = 2;
-        for (let i = 0; i < 6; i++) {
-          const [lx, ly] = px(10 + i * 6, 0);
-          ctx.beginPath(); ctx.arc(lx, ly, 2.5, 0, Math.PI * 2); ctx.stroke();
-        }
+        ctx.fillStyle = '#9c27b0'; ctx.shadowColor = '#ce93d8'; ctx.shadowBlur = 12;
+        ctx.beginPath(); ctx.arc(tx, ty, 5, 0, Math.PI * 2); ctx.fill(); ctx.shadowBlur = 0; break; }
+      case 'whip': { ctx.strokeStyle = '#5d4037'; ctx.lineWidth = 2.5;
+        const [a1x, a1y] = px(8, 0); const [a2x, a2y] = px(18, -6);
+        const [a3x, a3y] = px(28, 4); const [a4x, a4y] = px(40, -3);
+        ctx.beginPath(); ctx.moveTo(a1x, a1y); ctx.bezierCurveTo(a2x, a2y, a3x, a3y, a4x, a4y); ctx.stroke(); break; }
+      case 'chain': { ctx.strokeStyle = '#9e9e9e'; ctx.lineWidth = 2;
+        for (let i = 0; i < 6; i++) { const [lx, ly] = px(10 + i * 6, 0);
+          ctx.beginPath(); ctx.arc(lx, ly, 2.5, 0, Math.PI * 2); ctx.stroke(); }
         const [endx, endy] = px(46, 0);
-        ctx.fillStyle = '#616161';
-        ctx.beginPath(); ctx.arc(endx, endy, 4, 0, Math.PI * 2); ctx.fill();
-        break;
-      }
-      case 'knuckles': {
-        ctx.fillStyle = '#bdbdbd';
-        for (let i = 0; i < 4; i++) {
-          const [kx, ky] = px(10 + i * 5, 0);
-          ctx.beginPath(); ctx.arc(kx, ky, 3, 0, Math.PI * 2); ctx.fill();
-        }
-        break;
-      }
-      case 'dual': {
-        for (const off of [-4, 4]) {
-          const [hx, hy] = px(8, off);
-          const [tipx, tipy] = px(28, off);
+        ctx.fillStyle = '#616161'; ctx.beginPath(); ctx.arc(endx, endy, 4, 0, Math.PI * 2); ctx.fill(); break; }
+      case 'knuckles': { ctx.fillStyle = '#bdbdbd';
+        for (let i = 0; i < 4; i++) { const [kx, ky] = px(10 + i * 5, 0);
+          ctx.beginPath(); ctx.arc(kx, ky, 3, 0, Math.PI * 2); ctx.fill(); } break; }
+      case 'dual': { for (const off of [-4, 4]) {
+          const [hx, hy] = px(8, off); const [tipx, tipy] = px(28, off);
           ctx.strokeStyle = '#d8d8e0'; ctx.lineWidth = 3; ctx.lineCap = 'round';
           ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(tipx, tipy); ctx.stroke();
-        }
-        break;
-      }
-      default: {
-        const [hx, hy] = px(10, 0); const [tipx, tipy] = px(28, 0);
+        } break; }
+      default: { const [hx, hy] = px(10, 0); const [tipx, tipy] = px(28, 0);
         ctx.strokeStyle = '#ccc'; ctx.lineWidth = 3;
-        ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(tipx, tipy); ctx.stroke();
-      }
+        ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(tipx, tipy); ctx.stroke(); }
     }
     ctx.restore(); ctx.lineWidth = 1;
   }
@@ -2026,6 +2271,9 @@ function KrezcentQuest() {
       C: 'text-green-300', D: 'text-slate-300', E: 'text-slate-400', F: 'text-slate-500' }[g] || 'text-white';
   }
 
+  // ============================================================
+  //                      SCREENS & MODALS
+  // ============================================================
   function LoginScreen() {
     const [u, setU] = useState(''); const [pw, setPw] = useState(''); const [err, setErr] = useState('');
     return (
@@ -2049,9 +2297,7 @@ function KrezcentQuest() {
             className="w-full py-2 bg-purple-700 hover:bg-purple-600 rounded mb-3 font-bold">Log In</button>
           <div className="text-center text-sm text-slate-400">
             Don't have an account?{' '}
-            <button onClick={() => setScreen('register')} className="text-purple-300 hover:text-purple-200 underline">
-              Create one
-            </button>
+            <button onClick={() => setScreen('register')} className="text-purple-300 hover:text-purple-200 underline">Create one</button>
           </div>
         </div>
       </div>
@@ -2124,7 +2370,7 @@ function KrezcentQuest() {
         affinities = preview ? preview.affinities : rollCharacterAffinities();
       }
       const level = 1 + bonusLevel;
-      const maxHp = 200 + (level - 1) * 10;
+      const maxHp = 500 + (level - 1) * 10;
       const maxMana = 10 + (level - 1) * 5;
       const maxEnergy = 10 + (level - 1) * 5;
       const knownAbilities = {};
@@ -2163,10 +2409,10 @@ function KrezcentQuest() {
       const affinities = JSON.parse(JSON.stringify(cc.affs));
       setPreview({ attrs, affinities, codeNote: cc.note });
     }
-    const hairOptions = ['#3b2316', '#000', '#f9d71c', '#c1440e', '#ffffff', '#9c27b0', '#03a9f4', '#e91e63'];
-    const eyeOptions = ['#2196f3', '#4caf50', '#795548', '#ff9800', '#9c27b0', '#f44336'];
-    const skinOptions = ['#f4c2a1', '#deb887', '#a08060', '#8d5524', '#5d3924', '#fadbb5'];
-    const hairstyles = ['short', 'long', 'spiky'];
+    const hairOptions = ['#3b2316','#000','#f9d71c','#c1440e','#ffffff','#9c27b0','#03a9f4','#e91e63'];
+    const eyeOptions = ['#2196f3','#4caf50','#795548','#ff9800','#9c27b0','#f44336'];
+    const skinOptions = ['#f4c2a1','#deb887','#a08060','#8d5524','#5d3924','#fadbb5'];
+    const hairstyles = ['short','long','spiky'];
     return (
       <div className="h-full overflow-auto p-6" style={{ background: 'radial-gradient(ellipse at center, #2d1b4e 0%, #1a0f24 70%, #000 100%)', color: 'white' }}>
         <div className="max-w-5xl mx-auto">
@@ -2248,7 +2494,7 @@ function KrezcentQuest() {
                 </div>
               )}
               <div className="text-xs text-slate-400 italic mb-3">
-                Stats are randomly generated when you click Create Character. You cannot reroll without an admin code.
+                Stats are randomly generated when you click Create Character. Starting HP is 500.
               </div>
               <button onClick={buildAndStart}
                 className="w-full py-2 bg-green-700 hover:bg-green-600 rounded font-bold">Create Character</button>
@@ -2259,6 +2505,7 @@ function KrezcentQuest() {
     );
   }
 
+  // HUD reads from char state (updates on hudTick or char change). Modals do NOT use hudTick.
   function HUD() {
     if (!char) return null;
     const statuses = char.statusEffects || [];
@@ -2311,7 +2558,7 @@ function KrezcentQuest() {
       if (k && ATTRS[k]) slots.push({ key: `${i + 1}`, label: ATTRS[k].n, grade: char.attrs.find(a => a.key === k)?.grade, color: '#fbc02d' });
       else slots.push(null);
     }
-    const letters = ['Q', 'E', 'R', 'F', 'G'];
+    const letters = ['Q','E','R','F','G'];
     for (let i = 0; i < MAX_EQUIPPED_ABILITIES; i++) {
       const e = eqAbils[i];
       if (e) {
@@ -2390,20 +2637,14 @@ function KrezcentQuest() {
       const eq = [...(c.equippedAttrs || [])];
       const idx = eq.indexOf(key);
       if (idx >= 0) eq.splice(idx, 1);
-      else {
-        if (eq.length >= MAX_EQUIPPED_ATTRS) { setMsg(`You can only equip ${MAX_EQUIPPED_ATTRS} attributes`); return; }
-        eq.push(key);
-      }
+      else { if (eq.length >= MAX_EQUIPPED_ATTRS) { setMsg(`You can only equip ${MAX_EQUIPPED_ATTRS} attributes`); return; } eq.push(key); }
       c.equippedAttrs = eq; setChar({ ...c });
     }
     function toggleAbility(entry) {
       const eq = [...(c.equippedAbilityList || [])];
       const idx = eq.findIndex(e => e.name === entry.name && e.aff === entry.aff);
       if (idx >= 0) eq.splice(idx, 1);
-      else {
-        if (eq.length >= MAX_EQUIPPED_ABILITIES) { setMsg(`You can only equip ${MAX_EQUIPPED_ABILITIES} abilities`); return; }
-        eq.push(entry);
-      }
+      else { if (eq.length >= MAX_EQUIPPED_ABILITIES) { setMsg(`You can only equip ${MAX_EQUIPPED_ABILITIES} abilities`); return; } eq.push(entry); }
       c.equippedAbilityList = eq; setChar({ ...c });
     }
     const knownAbilityEntries = [];
@@ -2440,7 +2681,7 @@ function KrezcentQuest() {
                   return (
                     <div key={i} className="bg-slate-900 px-2 py-1 rounded flex justify-between items-center">
                       <span>
-                        <span className="text-slate-400">[{['Q', 'E', 'R', 'F', 'G'][i]}]</span>{' '}
+                        <span className="text-slate-400">[{['Q','E','R','F','G'][i]}]</span>{' '}
                         <strong style={{ color }}>{e.name}</strong>{' '}
                         <span className="text-xs text-slate-400">({e.aff})</span>
                       </span>
@@ -2551,8 +2792,7 @@ function KrezcentQuest() {
   }
 
   function ShopModal() {
-    const tab = shopTab;
-    const setTab = setShopTab;
+    const tab = shopTab; const setTab = setShopTab;
     const buyItems = Object.entries(ITEMS).filter(([k, v]) => v.shopSells);
     return (
       <ModalBox title="Krezcent Bazaar" onClose={() => setModal(null)}>
@@ -2608,7 +2848,7 @@ function KrezcentQuest() {
   function DungeonSelectModal() {
     return (
       <ModalBox title="Choose a Floor" onClose={() => setModal(null)}>
-        <p className="text-sm text-slate-400 mb-3">Unlocked: {char.unlockedFloor}. Floors cycle through 10 types.</p>
+        <p className="text-sm text-slate-400 mb-3">Unlocked: {char.unlockedFloor}. Floors cycle through 10 unique types.</p>
         <div className="grid grid-cols-10 gap-1">
           {Array.from({ length: 100 }).map((_, i) => {
             const f = i + 1;
@@ -2631,7 +2871,7 @@ function KrezcentQuest() {
     const opponent = pvpOpp; const setOpponent = setPvpOpp;
     function genOpp() {
       const lv = clamp(char.level + Math.floor((rand() - 0.5) * 4), 1, 100);
-      return { name: pick(['Riven', 'Kael', 'Zara', 'Mira', 'Thane', 'Ivy', 'Soren', 'Lyra']), level: lv };
+      return { name: pick(['Riven','Kael','Zara','Mira','Thane','Ivy','Soren','Lyra']), level: lv };
     }
     function fight(opp) {
       const myPower = char.level * 100 + Object.values(char.affinities).reduce((s, a) => s + a.level * 10, 0);
@@ -2668,7 +2908,6 @@ function KrezcentQuest() {
     );
   }
 
-  // ===== NEW: Blacksmith =====
   function BlacksmithModal() {
     const c = char;
     return (
@@ -2711,7 +2950,7 @@ function KrezcentQuest() {
                     c.coins -= s.price;
                     c.ownedWeapons.push(s.key);
                     setChar({ ...c });
-                    setMsg(`Bought ${w.n}! Equip it in your collection above.`);
+                    setMsg(`Bought ${w.n}!`);
                   }} disabled={owned}
                     className={`text-xs py-1 px-2 rounded ${owned ? 'bg-slate-700 text-slate-400' : 'bg-green-700 hover:bg-green-600'}`}>
                     {owned ? 'Owned' : 'Buy'}
@@ -2725,26 +2964,23 @@ function KrezcentQuest() {
     );
   }
 
-  // ===== NEW: Attribute trainer =====
   function TrainerModal() {
-    const c = char;
-    const g = trainerGrade;
-    const cfg = ATTRIBUTE_TRAINER[g];
+    const c = char; const g = trainerGrade; const cfg = ATTRIBUTE_TRAINER[g];
     const knownKeys = (c.attrs || []).map(a => a.key);
     function buyTraining() {
-      if (c.attrs.length >= 10) { setMsg('You already know the maximum of 10 attributes'); return; }
+      if (c.attrs.length >= 10) { setMsg('You already know 10 attributes'); return; }
       if (c.coins < cfg.price) { setMsg('Not enough coins'); return; }
       const key = pickAttrByGrade(g, knownKeys);
-      if (!key || knownKeys.includes(key)) { setMsg('No new attributes of that grade available — pick a different grade.'); return; }
+      if (!key || knownKeys.includes(key)) { setMsg('No new attribute of that grade available — pick a different grade'); return; }
       c.coins -= cfg.price;
       c.attrs = [...c.attrs, { key, grade: g }];
       setChar({ ...c });
-      setMsg(`Learned: ${ATTRS[key]?.n} (${g}). Open Loadout (L) to equip.`);
+      setMsg(`Learned: ${ATTRS[key]?.n} (${g})`);
     }
     return (
       <ModalBox title="Attribute Trainer" onClose={() => setModal(null)}>
-        <div className="text-yellow-400 mb-3">🪙 {c.coins} coins · Known: {c.attrs.length}/10</div>
-        <p className="text-sm text-slate-400 mb-3">Pay to learn a new attribute at a chosen grade. Stops at 10 known.</p>
+        <div className="text-yellow-400 mb-3">🪙 {c.coins} · Known: {c.attrs.length}/10</div>
+        <p className="text-sm text-slate-400 mb-3">Pay to learn a random new attribute at a chosen grade.</p>
         <div className="flex flex-wrap gap-2 mb-3">
           {Object.keys(ATTRIBUTE_TRAINER).map(grade => (
             <button key={grade} onClick={() => setTrainerGrade(grade)}
@@ -2778,15 +3014,12 @@ function KrezcentQuest() {
     );
   }
 
-  // ===== NEW: Mystery Boxes =====
   function MysteryModal() {
-    const c = char;
-    const spin = boxSpin;
+    const c = char; const spin = boxSpin;
     function openBox(key) {
       const box = MYSTERY_BOXES[key];
       if (c.coins < box.price) { setMsg('Not enough coins'); return; }
-      c.coins -= box.price;
-      setChar({ ...c });
+      c.coins -= box.price; setChar({ ...c });
       setBoxSpin({ boxKey: key, phase: 'spin', result: null });
       setTimeout(() => {
         const grade = rollMysteryBoxGrade(box);
@@ -2797,9 +3030,7 @@ function KrezcentQuest() {
         if (weaponKey) results.items.push({ kind: 'weapon', key: weaponKey, name: WEAPONS[weaponKey].n });
         for (const r of results.items) {
           if (r.kind === 'item') addItemToInventory({ key: r.key, name: r.name, grade: r.grade });
-          else if (r.kind === 'weapon') {
-            if (!c.ownedWeapons.includes(r.key)) c.ownedWeapons.push(r.key);
-          }
+          else if (r.kind === 'weapon') { if (!c.ownedWeapons.includes(r.key)) c.ownedWeapons.push(r.key); }
         }
         setChar({ ...c });
         setBoxSpin({ boxKey: key, phase: 'reveal', result: results });
@@ -2826,8 +3057,7 @@ function KrezcentQuest() {
                   </div>
                   <div className="text-right">
                     <div className="text-yellow-400 mb-1">🪙 {box.price.toLocaleString()}</div>
-                    <button onClick={() => openBox(key)}
-                      disabled={c.coins < box.price}
+                    <button onClick={() => openBox(key)} disabled={c.coins < box.price}
                       className={`text-xs py-1 px-3 rounded ${c.coins < box.price ? 'bg-slate-700 text-slate-400' : 'bg-green-700 hover:bg-green-600'}`}>
                       Open
                     </button>
@@ -2862,8 +3092,7 @@ function KrezcentQuest() {
                 ))}
               </div>
             )}
-            <button onClick={closeReveal}
-              className="mt-4 px-4 py-1 bg-purple-700 hover:bg-purple-600 rounded">Continue</button>
+            <button onClick={closeReveal} className="mt-4 px-4 py-1 bg-purple-700 hover:bg-purple-600 rounded">Continue</button>
           </div>
         )}
       </ModalBox>
@@ -2879,15 +3108,10 @@ function KrezcentQuest() {
       {screen === 'create' && <CharacterCreator />}
       {screen === 'world' && char && (
         <>
-          <canvas
-            ref={canvasRef}
-            width={vp.w}
-            height={vp.h}
+          <canvas ref={canvasRef} width={vp.w} height={vp.h}
             onMouseMove={handleMouse}
             onMouseDown={(e) => { handleMouse(e); doBasicAttack(); }}
-            className="block"
-            style={{ width: '100vw', height: '100vh', cursor: 'crosshair' }}
-          />
+            className="block" style={{ width: '100vw', height: '100vh', cursor: 'crosshair' }} />
           <HUD />
           <HotkeyBar />
           {world.current.zone === 'dungeon' && (
@@ -2932,3 +3156,5 @@ function KrezcentQuest() {
 
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(<KrezcentQuest />);
+
+
