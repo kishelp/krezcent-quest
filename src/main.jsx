@@ -1,3 +1,4 @@
+import './index.css';
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import ReactDOM from 'react-dom/client';
 
@@ -12,6 +13,7 @@ import { ZONES } from './data/zones.js';
 
 import { AudioMgr } from './engine/audio.js';
 import { StorageMgr } from './engine/storage.js';
+import { SaveAdapter } from './engine/save-adapter.js';
 import { generateFloor, updateHazards, updateFog, themeForFloor } from './engine/floor-gen.js';
 import {
   rand, pick, clamp,
@@ -2232,39 +2234,32 @@ function KrezcentQuest() {
   }
 
   async function saveCharacter() {
-    if (!account || !charRef.current) return;
-    const acct = await StorageMgr.getAccount(account.username); if (!acct) return;
-    const c = charRef.current;
-    c.lastZone = world.current.zone; c.currentFloor = world.current.floor;
-    acct.character = c;
-    await StorageMgr.setAccount(account.username, acct);
-  }
+  if (!account || !charRef.current) return;
+  const c = charRef.current;
+  c.lastZone = world.current.zone; c.currentFloor = world.current.floor;
+  await SaveAdapter.saveCharacter(account.username, c);
+}
 
   async function doLogin(u, pw, setErr) {
-    if (!u || !pw) { setErr('Enter username and password'); return; }
-    const acct = await StorageMgr.getAccount(u);
-    if (!acct) { setErr('No account with that name. Click Create Account.'); return; }
-    if (acct.passHash !== simpleHash(pw)) { setErr('Wrong password'); return; }
-    setAccount({ username: u });
-    await AudioMgr.start();
-    if (acct.character) {
-      const migrated = migrateChar(acct.character);
-      setChar(migrated); setScreen('world');
-      world.current.zone = migrated.lastZone || 'hub';
-      world.current.floor = migrated.currentFloor || 1;
-      setTimeout(() => enterZone(world.current.zone), 50);
-    } else setScreen('create');
-  }
+  const result = await SaveAdapter.authenticate(u, pw);
+  if (!result.ok) { setErr(result.error); return; }
+  const acct = result.account;
+  setAccount({ username: u });
+  await AudioMgr.start();
+  if (acct.character) {
+    const migrated = migrateChar(acct.character);
+    setChar(migrated); setScreen('world');
+    world.current.zone = migrated.lastZone || 'hub';
+    world.current.floor = migrated.currentFloor || 1;
+    setTimeout(() => enterZone(world.current.zone), 50);
+  } else setScreen('create');
+}
   async function doRegister(u, pw, pw2, setErr, onSuccess) {
-    if (!u || !pw) { setErr('Enter username and password'); return; }
-    if (u.length < 3) { setErr('Username must be 3+ characters'); return; }
-    if (pw.length < 4) { setErr('Password must be 4+ characters'); return; }
-    if (pw !== pw2) { setErr('Passwords do not match'); return; }
-    const existing = await StorageMgr.getAccount(u);
-    if (existing) { setErr('Username already taken'); return; }
-    await StorageMgr.setAccount(u, { passHash: simpleHash(pw), character: null });
-    onSuccess();
-  }
+  if (pw !== pw2) { setErr('Passwords do not match'); return; }
+  const result = await SaveAdapter.register(u, pw);
+  if (!result.ok) { setErr(result.error); return; }
+  onSuccess();
+}
 
   function gradeColor(g) {
     return { S: 'text-yellow-300', A: 'text-purple-300', B: 'text-blue-300',
@@ -2395,9 +2390,7 @@ function KrezcentQuest() {
       };
       setChar(newChar);
       (async () => {
-        const acct = await StorageMgr.getAccount(account.username);
-        acct.character = newChar;
-        await StorageMgr.setAccount(account.username, acct);
+        await SaveAdapter.saveCharacter(account.username, newChar);
       })();
       setScreen('world');
       setTimeout(() => enterZone('starting'), 50);

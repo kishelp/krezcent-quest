@@ -1,0 +1,16 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Keep the page background dark even before React mounts */
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  background: #0a0612;
+}
+
+body {
+  font-family: system-ui, sans-serif;
+  color: white;
+  overflow: hidden;
+}
