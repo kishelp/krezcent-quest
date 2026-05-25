@@ -189,8 +189,22 @@ function KrezcentQuest() {
     p.tileY = Math.floor(p.y / 40);
 
     if (w.maze) {
-      // Fog of war
-      updateFog(w.maze, p.tileX, p.tileY, 5);
+      // Fog of war — maze uses a tighter vision radius than other floors
+      const fogRadius = (w.maze.type === 'maze') ? 3 : 5;
+      updateFog(w.maze, p.tileX, p.tileY, fogRadius);
+
+      // Magma/lava tiles (tile 3) burn the player while standing on them
+      const standTile = w.maze.grid[p.tileY] ? w.maze.grid[p.tileY][p.tileX] : undefined;
+      if (standTile === 3) {
+        w.lavaBurnAcc = (w.lavaBurnAcc || 0) + dt;
+        if (w.lavaBurnAcc >= 0.5) {
+          w.lavaBurnAcc = 0;
+          damagePlayer(Math.ceil(c.maxHp * 0.02), 'Fire');
+          addFloat(p.x, p.y - 30, 'BURN', '#ff7043');
+        }
+      } else {
+        w.lavaBurnAcc = 0;
+      }
 
       // Hazards
       const events = updateHazards(w.maze, dt, p.tileX, p.tileY, p.x, p.y);
@@ -2365,7 +2379,7 @@ function KrezcentQuest() {
         affinities = preview ? preview.affinities : rollCharacterAffinities();
       }
       const level = 1 + bonusLevel;
-      const maxHp = 500 + (level - 1) * 10;
+      const maxHp = 1000 + (level - 1) * 15;
       const maxMana = 10 + (level - 1) * 5;
       const maxEnergy = 10 + (level - 1) * 5;
       const knownAbilities = {};
@@ -2866,27 +2880,34 @@ function KrezcentQuest() {
       const lv = clamp(char.level + Math.floor((rand() - 0.5) * 4), 1, 100);
       return { name: pick(['Riven','Kael','Zara','Mira','Thane','Ivy','Soren','Lyra']), level: lv };
     }
+    function findOpponent() {
+      const fee = Math.floor(char.coins * 0.10);
+      char.coins -= fee;
+      setChar({ ...char });
+      setMsg(`Entry fee paid: -${fee} coins (10%).`);
+      setOpponent(genOpp());
+    }
     function fight(opp) {
       const myPower = char.level * 100 + Object.values(char.affinities).reduce((s, a) => s + a.level * 10, 0);
       const oppPower = opp.level * 100;
       const myRoll = myPower * (0.7 + rand() * 0.6);
       const oppRoll = oppPower * (0.7 + rand() * 0.6);
       if (myRoll > oppRoll) {
-        const win = 50 + opp.level * 5;
+        const win = Math.floor(char.coins * 0.15);
         char.coins += win; grantExp(opp.level * 10);
-        setMsg(`Victory vs ${opp.name}! +${win} coins`);
+        setMsg(`Victory vs ${opp.name}! +${win} coins (15%)`);
       } else {
-        const loss = Math.min(char.coins, 20 + opp.level * 3);
+        const loss = Math.floor(char.coins * 0.05);
         char.coins -= loss; char.hp = Math.max(1, Math.floor(char.hp / 2));
-        setMsg(`Defeated by ${opp.name}. -${loss} coins, lost half HP`);
+        setMsg(`Defeated by ${opp.name}. -${loss} coins (5%), lost half HP`);
       }
       setChar({ ...char }); setOpponent(null);
     }
     return (
       <ModalBox title="PvP Arena (vs AI)" onClose={() => setModal(null)}>
         {!opponent ? (
-          <button onClick={() => setOpponent(genOpp())}
-            className="w-full py-2 bg-red-700 hover:bg-red-600 rounded font-bold">Find Opponent</button>
+          <button onClick={findOpponent}
+            className="w-full py-2 bg-red-700 hover:bg-red-600 rounded font-bold">Find Opponent (−10% coins entry fee)</button>
         ) : (
           <div className="bg-slate-900 p-3 rounded">
             <div className="text-lg font-bold">{opponent.name}</div>
@@ -3149,5 +3170,3 @@ function KrezcentQuest() {
 
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(<KrezcentQuest />);
-
-
