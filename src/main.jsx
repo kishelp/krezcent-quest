@@ -5,7 +5,7 @@ import ReactDOM from 'react-dom/client';
 import { ATTRS, ATTRS_BY_GRADE } from './data/attributes.js';
 import { AFFS, SUB_WEAK, SUB_COLOR, ABILITIES, SUB_ABILITIES } from './data/affinities.js';
 import { WEAPONS, STARTER_WEAPONS, DROPPABLE_WEAPONS } from './data/weapons.js';
-import { ITEMS, MONSTER_DROP_VALUE, ADMIN_CODES } from './data/items.js';
+import { ITEMS, MONSTER_DROP_VALUE, ADMIN_CODES, MAX_STACK } from './data/items.js';
 import { MONSTER_TYPES } from './data/monsters.js';
 import { bossForFloor, BOSS_AI_PATTERNS } from './data/bosses.js';
 import { MYSTERY_BOXES, ATTRIBUTE_TRAINER, WEAPON_SHOP, rollMysteryBoxGrade, rollMysteryBoxWeapon } from './data/shops.js';
@@ -22,12 +22,14 @@ import {
 } from './engine/helpers.js';
 
 const MAX_EQUIPPED_ATTRS = 7;
-const MAX_LEARNED_ATTRS = 30;
+const MAX_LEARNED_ATTRS = 25;
 const MAX_EQUIPPED_ABILITIES = 5;
 
 function migrateChar(c) {
   if (!c) return c;
   if (!c.expression) c.expression = 'neutral';
+  if (!c.outfit) c.outfit = 'tunic';
+  if (!c.clothColor) c.clothColor = '#5b21b6';
   if (!c.equippedAttrs) c.equippedAttrs = (c.attrs || []).slice(0, MAX_EQUIPPED_ATTRS).map(a => a.key);
   if (!c.knownAbilities) c.knownAbilities = {};
   for (const [aff, data] of Object.entries(c.affinities || {})) {
@@ -63,7 +65,7 @@ function KrezcentQuest() {
 
   const world = useRef({
     zone: null, floor: 1,
-    player: { x: 100, y: 400, dir: 0, speed: 220, lastAttack: 0, invuln: 0, sky: 0, stun: 0, blind: 0, slow: 0, shield: 0, buffs: {}, animTime: 0, moving: false, tileX: 0, tileY: 0 },
+    player: { x: 100, y: 400, dir: 0, speed: 220, lastAttack: 0, invuln: 0, sky: 0, stun: 0, blind: 0, slow: 0, shield: 0, buffs: {}, cooldowns: {}, animTime: 0, moving: false, tileX: 0, tileY: 0 },
     maze: null,
     npcs: [],
     projectiles: [],
@@ -160,6 +162,8 @@ function KrezcentQuest() {
     if (p.blind > 0) p.blind -= dt;
     if (p.slow > 0) p.slow -= dt;
     for (const k of Object.keys(p.buffs)) { p.buffs[k] -= dt; if (p.buffs[k] <= 0) delete p.buffs[k]; }
+    // Tick ability/attribute cooldowns
+    if (p.cooldowns) { for (const k of Object.keys(p.cooldowns)) { p.cooldowns[k] -= dt; if (p.cooldowns[k] <= 0) delete p.cooldowns[k]; } }
     // Update 5 attribute buffs
     if (p.buffs.regen) c.hp = clamp(c.hp + c.maxHp * 0.03 * dt, 0, c.maxHp);
     if (p.buffs.energyRegen) c.energy = clamp(c.energy + c.maxEnergy * 0.025 * dt, 0, c.maxEnergy);
@@ -327,6 +331,7 @@ function KrezcentQuest() {
     });
 
     w.effects = w.effects.filter(ef => {
+      if (ef.life0 === undefined) ef.life0 = ef.life;
       ef.life -= dt;
       // Orbit/nova that follow the player track its position each frame
       if (ef.follow) { ef.x = p.x; ef.y = p.y; }
@@ -1129,12 +1134,16 @@ function KrezcentQuest() {
     const w = world.current; const p = w.player;
     if (p.stun > 0) return;
     const attr = ATTRS[key]; if (!attr) return;
+    p.cooldowns = p.cooldowns || {};
+    const cdKey = 'attr_' + key;
+    if ((p.cooldowns[cdKey] || 0) > 0) { setMsg(`${attr.n} on cooldown (${p.cooldowns[cdKey].toFixed(1)}s)`); return; }
     let cost = attr.e;
     if (p.buffs.recycle) { cost /= 2; delete p.buffs.recycle; }
     if (c.energy < cost && cost < 999) { setMsg('Not enough energy'); return; }
     if (cost === 999) c.energy = 0; else c.energy -= cost;
     AudioMgr.play('magic');
     applyAttrEffect(key);
+    p.cooldowns[cdKey] = attr.cd || 3;
     setChar({ ...c });
   }
   function applyAttrEffect(key) {
@@ -1265,9 +1274,13 @@ function KrezcentQuest() {
     if (!abil) { setMsg('Ability not found'); return; }
     const w = world.current; const p = w.player;
     if (p.stun > 0) return;
+    p.cooldowns = p.cooldowns || {};
+    const cdKey = 'abil_' + entry.aff + '_' + entry.name;
+    if ((p.cooldowns[cdKey] || 0) > 0) { setMsg(`${abil.n} on cooldown (${p.cooldowns[cdKey].toFixed(1)}s)`); return; }
     if (c.mana < abil.m) { setMsg('Not enough mana'); return; }
     c.mana -= abil.m;
     AudioMgr.play('magic');
+    p.cooldowns[cdKey] = abil.cd || 3;
     let mult = 1;
     const wpn = WEAPONS[c.weapon];
     if (wpn?.manaBoost) mult += wpn.manaBoost;
@@ -1501,8 +1514,23 @@ function KrezcentQuest() {
   function addFloat(x, y, text, color) { world.current.floats.push({ x, y, text, color, life: 1.2 }); }
   function addItemToInventory(item) {
     const c = charRef.current;
+    const data = item.key ? ITEMS[item.key] : null;
+    const stackable = data && data.stack && !item.isTrophy;
+    const cap = MAX_STACK || 99;
+    if (stackable) {
+      // Fill existing stacks of the same key that have room
+      for (const slot of c.inventory) {
+        if (slot.key === item.key && !slot.isTrophy && (slot.qty || 1) < cap) {
+          slot.qty = (slot.qty || 1) + (item.qty || 1);
+          let overflow = 0;
+          if (slot.qty > cap) { overflow = slot.qty - cap; slot.qty = cap; }
+          if (overflow <= 0) { setChar({ ...c }); return true; }
+          item = { ...item, qty: overflow };
+        }
+      }
+    }
     if (c.inventory.length >= 20) { setMsg('Inventory full! Item lost.'); return false; }
-    c.inventory = [...c.inventory, item];
+    c.inventory = [...c.inventory, { ...item, qty: item.qty || 1 }];
     setChar({ ...c });
     return true;
   }
@@ -1529,6 +1557,16 @@ function KrezcentQuest() {
       case 'mana5': c.mana = clamp(c.mana + c.maxMana * 0.05, 0, c.maxMana); break;
       case 'energy5': c.energy = clamp(c.energy + c.maxEnergy * 0.05, 0, c.maxEnergy); break;
       case 'heal2': c.hp = clamp(c.hp + c.maxHp * 0.02, 0, c.maxHp); break;
+      case 'heal3': c.hp = clamp(c.hp + c.maxHp * 0.03, 0, c.maxHp); break;
+      case 'heal12': c.hp = clamp(c.hp + c.maxHp * 0.12, 0, c.maxHp); break;
+      case 'boost15s': p.buffs.boost = 15; setMsg('Power Draught! +20% damage 15s'); break;
+      case 'haste15s': p.buffs.quickstep = 15; setMsg('Swift Tonic! +25% speed 15s'); break;
+      case 'guard15s': p.buffs.ironskin = 15; setMsg('Iron Tonic! -25% damage 15s'); break;
+      case 'shield150': p.shield = (p.shield || 0) + 150; setMsg('Shield up! +150'); break;
+      case 'cleanse': c.statusEffects = []; p.blind = 0; p.slow = 0; setMsg('Cleansed!'); break;
+      case 'blindAll': for (const m of monstersInRadius(p.x, p.y, 180)) m.aiCooldown = 2; setMsg('Smoke bomb!'); break;
+      case 'rockHit': { const m = findNearestMonster(); if (m) { damageMonster(m, 20, null); setMsg('Rock hit for 20!'); } else setMsg('No target'); break; }
+      case 'reviveBuff': p.buffs.immortal = 5; setMsg('Phoenix Tear! Cannot die for 5s'); break;
       case 'kill': c.hp = 0; break;
       case 'levelUp': grantExp(expForLevel(c.level)); break;
       case 'affinityUp': { const keys = Object.keys(c.affinities); if (keys.length) c.affinities[keys[0]].level++; break; }
@@ -1536,13 +1574,17 @@ function KrezcentQuest() {
       case 'removeAttr': if (c.attrs.length > 0) { c.attrs.pop(); c.equippedAttrs = (c.equippedAttrs || []).filter(k => c.attrs.some(a => a.key === k)); setMsg('Removed last attribute'); } break;
       default: break;
     }
-    c.inventory = c.inventory.filter((_, i) => i !== idx);
+    const slot = c.inventory[idx];
+    if (slot && (slot.qty || 1) > 1) { slot.qty -= 1; c.inventory = [...c.inventory]; }
+    else c.inventory = c.inventory.filter((_, i) => i !== idx);
     setChar({ ...c });
     if (c.hp <= 0) onPlayerDeath();
   }
   function dropItem(idx) {
     const c = charRef.current;
-    c.inventory = c.inventory.filter((_, i) => i !== idx);
+    const slot = c.inventory[idx];
+    if (slot && (slot.qty || 1) > 1) { slot.qty -= 1; c.inventory = [...c.inventory]; }
+    else c.inventory = c.inventory.filter((_, i) => i !== idx);
     setChar({ ...c });
   }
 
@@ -1553,7 +1595,7 @@ function KrezcentQuest() {
     if (zone === 'starting') {
       w.maze = null;
       const z = ZONES.starting;
-      w.player.x = fromDir === 'fromHub' ? 60 : z.spawn.x;
+      w.player.x = fromDir === 'fromHub' ? 1540 : z.spawn.x;
       w.player.y = fromDir === 'fromHub' ? 450 : z.spawn.y;
       w.npcs = [
         { x: 700, y: 450, color: '#ffeb3b', kind: 'sage', prompt: 'Talk to Sage [SPACE]',
@@ -1666,41 +1708,44 @@ function KrezcentQuest() {
         ctx.beginPath(); ctx.arc(ex, ey, (ef.radius || 20) * 0.4, 0, Math.PI * 2); ctx.fill();
         ctx.restore(); ctx.globalAlpha = 1;
       } else if (ef.type === 'nova') {
-        const total = 0.55; const k = 1 - Math.max(0, ef.life) / total;
-        const r = ef.radius * k;
+        const total = ef.life0 || 0.55; const k = Math.max(0, Math.min(1, 1 - Math.max(0, ef.life) / total));
+        const r = Math.max(0, ef.radius * k);
+        const a0 = Math.max(0, Math.min(1, ef.life / total));
         ctx.save(); ctx.shadowColor = ef.color; ctx.shadowBlur = 24;
-        ctx.strokeStyle = ef.color; ctx.lineWidth = 6 * (ef.life / total) + 2;
-        ctx.globalAlpha = Math.max(0, ef.life / total);
+        ctx.strokeStyle = ef.color; ctx.lineWidth = 6 * a0 + 2;
+        ctx.globalAlpha = a0;
         ctx.beginPath(); ctx.arc(ex, ey, r, 0, Math.PI * 2); ctx.stroke();
         // inner fill flash
-        ctx.globalAlpha = 0.25 * (ef.life / total);
+        ctx.globalAlpha = 0.25 * a0;
         ctx.fillStyle = ef.color;
-        ctx.beginPath(); ctx.arc(ex, ey, r * 0.8, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(ex, ey, Math.max(0, r * 0.8), 0, Math.PI * 2); ctx.fill();
         // family flair
         if (ef.fam === 'lightning') {
-          ctx.globalAlpha = ef.life / total; ctx.lineWidth = 2;
+          ctx.globalAlpha = a0; ctx.lineWidth = 2;
           for (let i = 0; i < 8; i++) { const a = i / 8 * Math.PI * 2; ctx.beginPath(); ctx.moveTo(ex, ey); ctx.lineTo(ex + Math.cos(a) * r, ey + Math.sin(a) * r); ctx.stroke(); }
         } else if (ef.fam === 'fire') {
-          ctx.globalAlpha = 0.5 * (ef.life / total); ctx.fillStyle = '#ffd54f';
+          ctx.globalAlpha = 0.5 * a0; ctx.fillStyle = '#ffd54f';
           for (let i = 0; i < 10; i++) { const a = i / 10 * Math.PI * 2; ctx.beginPath(); ctx.arc(ex + Math.cos(a) * r * 0.9, ey + Math.sin(a) * r * 0.9, 5, 0, Math.PI * 2); ctx.fill(); }
         }
         ctx.restore(); ctx.globalAlpha = 1; ctx.lineWidth = 1;
       } else if (ef.type === 'ultimate') {
-        const total = 1.0; const k = 1 - Math.max(0, ef.life) / total;
+        const total = ef.life0 || 1.0; const k = Math.max(0, Math.min(1, 1 - Math.max(0, ef.life) / total));
+        const a0 = Math.max(0, Math.min(1, ef.life / total));
         ctx.save(); ctx.shadowColor = ef.color; ctx.shadowBlur = 30;
         // screen flash
-        ctx.globalAlpha = 0.18 * (ef.life / total); ctx.fillStyle = ef.color;
+        ctx.globalAlpha = 0.18 * a0; ctx.fillStyle = ef.color;
         ctx.fillRect(0, 0, W, H);
         // expanding rings
         for (let ring = 0; ring < 3; ring++) {
-          const rr = ef.radius * Math.min(1, k + ring * 0.18);
-          ctx.globalAlpha = Math.max(0, (ef.life / total) - ring * 0.15);
+          const rr = Math.max(0, ef.radius * Math.min(1, k + ring * 0.18));
+          ctx.globalAlpha = Math.max(0, a0 - ring * 0.15);
           ctx.strokeStyle = ring === 1 ? '#fff' : ef.color; ctx.lineWidth = 8 - ring * 2;
           ctx.beginPath(); ctx.arc(ex, ey, rr, 0, Math.PI * 2); ctx.stroke();
         }
         // rotating spokes
-        ctx.globalAlpha = 0.6 * (ef.life / total); ctx.strokeStyle = ef.color; ctx.lineWidth = 3;
-        for (let i = 0; i < 12; i++) { const a = i / 12 * Math.PI * 2 + k * 4; ctx.beginPath(); ctx.moveTo(ex, ey); ctx.lineTo(ex + Math.cos(a) * ef.radius * k, ey + Math.sin(a) * ef.radius * k); ctx.stroke(); }
+        ctx.globalAlpha = 0.6 * a0; ctx.strokeStyle = ef.color; ctx.lineWidth = 3;
+        const sr = Math.max(0, ef.radius * k);
+        for (let i = 0; i < 12; i++) { const a = i / 12 * Math.PI * 2 + k * 4; ctx.beginPath(); ctx.moveTo(ex, ey); ctx.lineTo(ex + Math.cos(a) * sr, ey + Math.sin(a) * sr); ctx.stroke(); }
         ctx.restore(); ctx.globalAlpha = 1; ctx.lineWidth = 1;
       } else if (ef.type === 'cone') {
         ctx.save(); ctx.shadowColor = ef.color; ctx.shadowBlur = 16;
@@ -2765,6 +2810,15 @@ function KrezcentQuest() {
     },
   };
 
+  function shadeColor(hex, amt) {
+    // amt in [-1,1]; negative darkens, positive lightens
+    let h = (hex || '#000000').replace('#', '');
+    if (h.length === 3) h = h.split('').map(ch => ch + ch).join('');
+    let r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16);
+    const f = (v) => Math.max(0, Math.min(255, Math.round(amt < 0 ? v * (1 + amt) : v + (255 - v) * amt)));
+    return '#' + [f(r), f(g), f(b)].map(v => v.toString(16).padStart(2, '0')).join('');
+  }
+
   function drawPlayer(ctx, x, y, c, p) {
     ctx.fillStyle = 'rgba(0,0,0,0.3)';
     ctx.beginPath(); ctx.ellipse(x, y + 22, 14, 5, 0, 0, Math.PI * 2); ctx.fill();
@@ -2773,11 +2827,40 @@ function KrezcentQuest() {
     ctx.fillStyle = '#2c1a4a';
     ctx.fillRect(x - 7, y + 8, 5, 14 + legA);
     ctx.fillRect(x + 2, y + 8, 5, 14 - legA);
-    ctx.fillStyle = '#5b21b6';
-    ctx.beginPath();
-    ctx.moveTo(x - 11, y - 2); ctx.lineTo(x + 11, y - 2);
-    ctx.lineTo(x + 9, y + 12); ctx.lineTo(x - 9, y + 12); ctx.closePath();
-    ctx.fill();
+    const outfit = c.outfit || 'tunic';
+    const cloth = c.clothColor || '#5b21b6';
+    const clothDark = shadeColor(cloth, -0.35);
+    // Cloak drawn behind the body
+    if (outfit === 'cloak') {
+      ctx.fillStyle = clothDark;
+      ctx.beginPath();
+      ctx.moveTo(x - 12, y - 4); ctx.lineTo(x + 12, y - 4);
+      ctx.lineTo(x + 15, y + 18); ctx.lineTo(x - 15, y + 18); ctx.closePath(); ctx.fill();
+    }
+    ctx.fillStyle = cloth;
+    if (outfit === 'robe') {
+      // long flowing robe (wider at the bottom)
+      ctx.beginPath();
+      ctx.moveTo(x - 11, y - 2); ctx.lineTo(x + 11, y - 2);
+      ctx.lineTo(x + 13, y + 20); ctx.lineTo(x - 13, y + 20); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = shadeColor(cloth, 0.2); ctx.fillRect(x - 2, y - 2, 4, 22); // center seam
+    } else if (outfit === 'armor') {
+      // boxy plate chest with shoulder pads
+      ctx.fillRect(x - 11, y - 2, 22, 14);
+      ctx.fillStyle = clothDark; ctx.fillRect(x - 13, y - 3, 5, 6); ctx.fillRect(x + 8, y - 3, 5, 6);
+      ctx.fillStyle = shadeColor(cloth, 0.25); ctx.fillRect(x - 8, y, 16, 3); // chest highlight
+    } else if (outfit === 'vest') {
+      // open vest over skin
+      ctx.fillStyle = c.skin; ctx.fillRect(x - 9, y - 2, 18, 14);
+      ctx.fillStyle = cloth;
+      ctx.beginPath(); ctx.moveTo(x - 11, y - 2); ctx.lineTo(x - 3, y - 2); ctx.lineTo(x - 5, y + 12); ctx.lineTo(x - 11, y + 12); ctx.closePath(); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(x + 11, y - 2); ctx.lineTo(x + 3, y - 2); ctx.lineTo(x + 5, y + 12); ctx.lineTo(x + 11, y + 12); ctx.closePath(); ctx.fill();
+    } else {
+      // tunic (default trapezoid)
+      ctx.beginPath();
+      ctx.moveTo(x - 11, y - 2); ctx.lineTo(x + 11, y - 2);
+      ctx.lineTo(x + 9, y + 12); ctx.lineTo(x - 9, y + 12); ctx.closePath(); ctx.fill();
+    }
     ctx.fillStyle = '#3e2723'; ctx.fillRect(x - 10, y + 7, 20, 3);
     ctx.fillStyle = '#fbc02d'; ctx.fillRect(x - 2, y + 7, 4, 3);
     const armA = walkPhase * 2;
@@ -3149,17 +3232,16 @@ function KrezcentQuest() {
     );
   }
 
-  function CharacterPreview({ hair, eye, skin, hairstyle, expression, weapon }) {
+  function CharacterPreview({ hair, eye, skin, hairstyle, expression, outfit, clothColor, weapon }) {
     const ref = useRef(null);
     useEffect(() => {
       const cv = ref.current; if (!cv) return;
       const ctx = cv.getContext('2d');
       let raf, t0 = performance.now();
-      const fakeC = { hair, eye, skin, hairstyle, expression, weapon };
+      const fakeC = { hair, eye, skin, hairstyle, expression, outfit, clothColor, weapon };
       const draw = () => {
         const t = (performance.now() - t0) / 1000;
         ctx.clearRect(0, 0, cv.width, cv.height);
-        // soft backdrop
         ctx.fillStyle = 'rgba(124,77,255,0.08)';
         ctx.beginPath(); ctx.arc(cv.width / 2, cv.height / 2 + 10, 46, 0, Math.PI * 2); ctx.fill();
         const fakeP = { dir: Math.sin(t * 1.2) * 0.9, moving: true, animTime: t, invuln: 0, shield: 0, sky: 0, buffs: {} };
@@ -3168,7 +3250,7 @@ function KrezcentQuest() {
       };
       draw();
       return () => cancelAnimationFrame(raf);
-    }, [hair, eye, skin, hairstyle, expression, weapon]);
+    }, [hair, eye, skin, hairstyle, expression, outfit, clothColor, weapon]);
     return <canvas ref={ref} width={160} height={150} className="rounded bg-slate-900 border border-slate-700" />;
   }
 
@@ -3178,6 +3260,8 @@ function KrezcentQuest() {
     const [skin, setSkin] = useState('#f4c2a1');
     const [hairstyle, setHairstyle] = useState('short');
     const [expression, setExpression] = useState('neutral');
+    const [outfit, setOutfit] = useState('tunic');
+    const [clothColor, setClothColor] = useState('#5b21b6');
     const [weapon, setWeapon] = useState('sword');
     const [code, setCode] = useState('');
     const [preview, setPreview] = useState(null);
@@ -3186,13 +3270,31 @@ function KrezcentQuest() {
 
     function buildAndStart() {
       if (!name.trim()) { setMsg('Enter a character name'); return; }
-      let attrs, affinities, bonusLevel = 0, bonusCoins = 0;
+      let attrs, affinities, bonusLevel = 0, bonusCoins = 0, setCoins = null;
       if (hasCode) {
         const cc = ADMIN_CODES[code];
         attrs = cc.attrs.map(a => ({ ...a }));
-        affinities = JSON.parse(JSON.stringify(cc.affs));
+        affinities = JSON.parse(JSON.stringify(cc.affs || {}));
         bonusLevel = cc.bonusLevel || 0; bonusCoins = cc.bonusCoins || 0;
+        if (cc.setCoins != null) setCoins = cc.setCoins;
+        // Grant every main + sub affinity (each main carries one sub for the panel)
+        if (cc.allAffinities) {
+          const mains = Object.keys(AFFS);
+          const subs = Object.keys(SUB_ABILITIES);
+          const lvl = cc.maxAllAbilities ? 100 : 50;
+          for (let i = 0; i < mains.length; i++) {
+            affinities[mains[i]] = { level: lvl };
+            if (subs[i]) { affinities[mains[i]].sub = subs[i]; affinities[mains[i]].subLevel = lvl; }
+          }
+          // attach any leftover subs to mains as a secondary list so all are owned
+          if (subs.length > mains.length) {
+            affinities._extraSubs = subs.slice(mains.length);
+          }
+        } else if (cc.maxAllAbilities) {
+          for (const k of Object.keys(affinities)) { affinities[k].level = 100; if (affinities[k].sub) affinities[k].subLevel = 100; }
+        }
         for (const k of Object.keys(affinities)) {
+          if (k === '_extraSubs') continue;
           if (!('exp' in affinities[k])) affinities[k].exp = 0;
           if (affinities[k].sub && !('subExp' in affinities[k])) affinities[k].subExp = 0;
         }
@@ -3206,6 +3308,7 @@ function KrezcentQuest() {
       const maxEnergy = 10 + (level - 1) * 5;
       const knownAbilities = {};
       for (const [aff, data] of Object.entries(affinities)) {
+        if (aff === '_extraSubs') continue;
         const list = ABILITIES[aff] || [];
         knownAbilities[aff] = list.filter(a => a.lvl <= data.level).map(a => a.n);
         if (data.sub) {
@@ -3213,15 +3316,25 @@ function KrezcentQuest() {
           knownAbilities[data.sub] = sl.filter(a => a.lvl <= (data.subLevel || 1)).map(a => a.n);
         }
       }
+      // Any sub-affinities not attached to a main (KISHEL_DEV) still get all abilities
+      if (affinities._extraSubs) {
+        const lvl = ADMIN_CODES[code]?.maxAllAbilities ? 100 : 50;
+        for (const sub of affinities._extraSubs) {
+          const sl = SUB_ABILITIES[sub] || [];
+          knownAbilities[sub] = sl.filter(a => a.lvl <= lvl).map(a => a.n);
+          affinities[sub] = { level: lvl, exp: 0, isStandaloneSub: true };
+        }
+        delete affinities._extraSubs;
+      }
       const newChar = {
-        name: name.trim(), hair, eye, skin, hairstyle, expression, weapon,
+        name: name.trim(), hair, eye, skin, hairstyle, expression, outfit, clothColor, weapon,
         attrs, affinities,
         equippedAttrs: attrs.slice(0, MAX_EQUIPPED_ATTRS).map(a => a.key),
         knownAbilities, equippedAbilityList: [],
         ownedWeapons: [weapon],
         statusEffects: [],
         level, exp: 0, maxHp, hp: maxHp, maxMana, mana: maxMana, maxEnergy, energy: maxEnergy,
-        inventory: [], coins: 100 + bonusCoins,
+        inventory: [], coins: setCoins != null ? setCoins : (100 + bonusCoins),
         unlockedFloor: 1, currentFloor: 1, lastZone: 'starting',
       };
       setChar(newChar);
@@ -3243,6 +3356,8 @@ function KrezcentQuest() {
     const skinOptions = ['#f4c2a1','#deb887','#c68642','#a08060','#8d5524','#5d3924','#fadbb5','#ffe0bd','#3b2219','#e8b89b'];
     const hairstyles = ['short','long','spiky','mohawk','ponytail','bun','curly','bald'];
     const expressions = ['neutral','happy','angry','cool','surprised','smug'];
+    const outfits = ['tunic','robe','armor','cloak','vest'];
+    const clothOptions = ['#5b21b6','#1565c0','#2e7d32','#c62828','#f9a825','#37474f','#6d4c41','#ad1457','#00838f','#ffffff','#212121','#ef6c00'];
     return (
       <div className="h-full overflow-auto p-6" style={{ background: 'radial-gradient(ellipse at center, #2d1b4e 0%, #1a0f24 70%, #000 100%)', color: 'white' }}>
         <div className="max-w-5xl mx-auto">
@@ -3304,6 +3419,25 @@ function KrezcentQuest() {
                 </div>
               </div>
               <div className="mb-3">
+                <label className="block text-sm text-slate-400 mb-1">Clothing</label>
+                <div className="flex flex-wrap gap-2">
+                  {outfits.map(s => (
+                    <button key={s} onClick={() => setOutfit(s)}
+                      className={`px-3 py-1 rounded ${outfit === s ? 'bg-purple-700' : 'bg-slate-700 hover:bg-slate-600'}`}>{s}</button>
+                  ))}
+                </div>
+              </div>
+              <div className="mb-3">
+                <label className="block text-sm text-slate-400 mb-1">Clothing Color</label>
+                <div className="flex flex-wrap gap-2">
+                  {clothOptions.map(co => (
+                    <button key={co} onClick={() => setClothColor(co)}
+                      className={`w-8 h-8 rounded-full border-2 ${clothColor === co ? 'border-white' : 'border-slate-600'}`}
+                      style={{ background: co }} />
+                  ))}
+                </div>
+              </div>
+              <div className="mb-3">
                 <label className="block text-sm text-slate-400 mb-1">Starting Weapon</label>
                 <div className="flex flex-wrap gap-2">
                   {STARTER_WEAPONS.map(k => (
@@ -3328,7 +3462,7 @@ function KrezcentQuest() {
             <div className="bg-slate-800/70 p-4 rounded border border-purple-700">
               <h2 className="text-xl mb-3">Preview</h2>
               <div className="flex justify-center mb-3">
-                <CharacterPreview hair={hair} eye={eye} skin={skin} hairstyle={hairstyle} expression={expression} weapon={weapon} />
+                <CharacterPreview hair={hair} eye={eye} skin={skin} hairstyle={hairstyle} expression={expression} outfit={outfit} clothColor={clothColor} weapon={weapon} />
               </div>
               {preview && hasCode && (
                 <div className="text-sm space-y-2 mb-3">
@@ -3394,10 +3528,11 @@ function KrezcentQuest() {
     if (!char) return null;
     const eqAttrs = char.equippedAttrs || [];
     const eqAbils = char.equippedAbilityList || [];
+    const cds = (world.current.player && world.current.player.cooldowns) || {};
     const slots = [];
     for (let i = 0; i < MAX_EQUIPPED_ATTRS; i++) {
       const k = eqAttrs[i];
-      if (k && ATTRS[k]) slots.push({ key: `${i + 1}`, label: ATTRS[k].n, grade: char.attrs.find(a => a.key === k)?.grade, color: '#fbc02d' });
+      if (k && ATTRS[k]) slots.push({ key: `${i + 1}`, label: ATTRS[k].n, grade: char.attrs.find(a => a.key === k)?.grade, color: '#fbc02d', cdKey: 'attr_' + k, cdTotal: ATTRS[k].cd || 3 });
       else slots.push(null);
     }
     const letters = ['Q','E','R','F','G'];
@@ -3405,18 +3540,30 @@ function KrezcentQuest() {
       const e = eqAbils[i];
       if (e) {
         const color = e.isSub ? SUB_COLOR[e.aff] : AFFS[e.aff]?.color;
-        slots.push({ key: letters[i], label: e.name, color });
+        const list = e.isSub ? (SUB_ABILITIES[e.aff] || []) : (ABILITIES[e.aff] || []);
+        const ab = list.find(a => a.n === e.name);
+        slots.push({ key: letters[i], label: e.name, color, cdKey: 'abil_' + e.aff + '_' + e.name, cdTotal: (ab && ab.cd) || 3 });
       } else slots.push({ key: letters[i], label: '—', color: '#444' });
     }
     return (
       <div className="absolute bottom-2 left-1/2 -translate-x-1/2 flex gap-1 pointer-events-none flex-wrap justify-center max-w-full">
-        {slots.map((s, i) => (
-          <div key={i} className="bg-black/80 border border-slate-600 rounded w-20 h-16 p-1 text-xs text-white text-center">
-            <div className="text-slate-400 text-xs">[{s?.key || '-'}]</div>
-            <div className="text-xs truncate" style={{ color: s?.color || '#444' }}>{s?.label || '·'}</div>
-            {s?.grade && <div className={`text-xs ${gradeColor(s.grade)}`}>{s.grade}</div>}
-          </div>
-        ))}
+        {slots.map((s, i) => {
+          const rem = s?.cdKey ? (cds[s.cdKey] || 0) : 0;
+          const frac = rem > 0 && s?.cdTotal ? Math.max(0, Math.min(1, rem / s.cdTotal)) : 0;
+          return (
+            <div key={i} className="relative bg-black/80 border border-slate-600 rounded w-20 h-16 p-1 text-xs text-white text-center overflow-hidden">
+              <div className="text-slate-400 text-xs">[{s?.key || '-'}]</div>
+              <div className="text-xs truncate" style={{ color: s?.color || '#444' }}>{s?.label || '·'}</div>
+              {s?.grade && <div className={`text-xs ${gradeColor(s.grade)}`}>{s.grade}</div>}
+              {rem > 0 && (
+                <div className="absolute inset-0 flex items-center justify-center"
+                  style={{ background: `conic-gradient(rgba(20,20,30,0.78) ${frac * 360}deg, rgba(0,0,0,0) 0deg)` }}>
+                  <span className="text-white font-bold text-sm" style={{ textShadow: '0 0 3px #000' }}>{rem.toFixed(1)}</span>
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
     );
   }
@@ -3462,7 +3609,7 @@ function KrezcentQuest() {
             <div className="font-bold text-purple-300 mb-1 mt-2">Affinities</div>
             {Object.entries(char.affinities).map(([k, v]) => (
               <div key={k} className="mb-2">
-                <div style={{ color: AFFS[k]?.color }}>{k} · Lv {v.level} ({v.exp}/{affinityExpForLevel(v.level)})</div>
+                <div style={{ color: AFFS[k]?.color || SUB_COLOR[k] }}>{k} · Lv {v.level} ({v.exp}/{affinityExpForLevel(v.level)})</div>
                 {v.sub && <div className="text-xs ml-3" style={{ color: SUB_COLOR[v.sub] }}>↳ {v.sub} · Lv {v.subLevel} ({v.subExp}/{affinityExpForLevel(v.subLevel)})</div>}
               </div>
             ))}
@@ -3616,7 +3763,7 @@ function KrezcentQuest() {
                 {item ? (
                   <>
                     <div>
-                      <div className={`font-bold ${gradeColor(item.grade)}`}>[{item.grade}]</div>
+                      <div className={`font-bold ${gradeColor(item.grade)}`}>[{item.grade}]{(item.qty || 1) > 1 && <span className="text-white"> ×{item.qty}</span>}</div>
                       <div className="truncate">{item.name}</div>
                     </div>
                     <div className="flex gap-1">
@@ -3653,7 +3800,9 @@ function KrezcentQuest() {
                   <span className="text-yellow-400">🪙 {v.price}</span>
                   <button onClick={() => {
                     if (char.coins < v.price) { setMsg('Not enough coins'); return; }
-                    if (char.inventory.length >= 20) { setMsg('Inventory full'); return; }
+                    const cap = MAX_STACK || 99;
+                    const hasRoom = char.inventory.length < 20 || (v.stack && char.inventory.some(s => s.key === k && !s.isTrophy && (s.qty || 1) < cap));
+                    if (!hasRoom) { setMsg('Inventory full'); return; }
                     char.coins -= v.price;
                     addItemToInventory({ key: k, name: v.n, grade: v.g });
                   }} className="px-2 py-1 bg-green-700 hover:bg-green-600 rounded text-xs">Buy</button>
@@ -3668,12 +3817,13 @@ function KrezcentQuest() {
               const value = item.isTrophy ? MONSTER_DROP_VALUE[item.grade] : Math.floor((ITEMS[item.key]?.price || 5) * 0.5);
               return (
                 <div key={i} className="bg-slate-900 p-2 rounded">
-                  <div className={`font-bold ${gradeColor(item.grade)}`}>[{item.grade}] {item.name}</div>
+                  <div className={`font-bold ${gradeColor(item.grade)}`}>[{item.grade}] {item.name}{(item.qty || 1) > 1 && <span className="text-white"> ×{item.qty}</span>}</div>
                   <div className="flex justify-between items-center mt-1">
                     <span className="text-yellow-400">🪙 {value}</span>
                     <button onClick={() => {
                       char.coins += value;
-                      char.inventory = char.inventory.filter((_, j) => j !== i);
+                      if ((item.qty || 1) > 1) { item.qty -= 1; char.inventory = [...char.inventory]; }
+                      else char.inventory = char.inventory.filter((_, j) => j !== i);
                       setChar({ ...char });
                     }} className="px-2 py-1 bg-yellow-700 hover:bg-yellow-600 rounded text-xs">Sell</button>
                   </div>
