@@ -4,7 +4,7 @@ import ReactDOM from 'react-dom/client';
 
 import { ATTRS, ATTRS_BY_GRADE } from './data/attributes.js';
 import { AFFS, SUB_WEAK, SUB_COLOR, ABILITIES, SUB_ABILITIES } from './data/affinities.js';
-import { WEAPONS, STARTER_WEAPONS } from './data/weapons.js';
+import { WEAPONS, STARTER_WEAPONS, DROPPABLE_WEAPONS } from './data/weapons.js';
 import { ITEMS, MONSTER_DROP_VALUE, ADMIN_CODES } from './data/items.js';
 import { MONSTER_TYPES } from './data/monsters.js';
 import { bossForFloor, BOSS_AI_PATTERNS } from './data/bosses.js';
@@ -22,10 +22,12 @@ import {
 } from './engine/helpers.js';
 
 const MAX_EQUIPPED_ATTRS = 7;
+const MAX_LEARNED_ATTRS = 30;
 const MAX_EQUIPPED_ABILITIES = 5;
 
 function migrateChar(c) {
   if (!c) return c;
+  if (!c.expression) c.expression = 'neutral';
   if (!c.equippedAttrs) c.equippedAttrs = (c.attrs || []).slice(0, MAX_EQUIPPED_ATTRS).map(a => a.key);
   if (!c.knownAbilities) c.knownAbilities = {};
   for (const [aff, data] of Object.entries(c.affinities || {})) {
@@ -158,6 +160,19 @@ function KrezcentQuest() {
     if (p.blind > 0) p.blind -= dt;
     if (p.slow > 0) p.slow -= dt;
     for (const k of Object.keys(p.buffs)) { p.buffs[k] -= dt; if (p.buffs[k] <= 0) delete p.buffs[k]; }
+    // Update 5 attribute buffs
+    if (p.buffs.regen) c.hp = clamp(c.hp + c.maxHp * 0.03 * dt, 0, c.maxHp);
+    if (p.buffs.energyRegen) c.energy = clamp(c.energy + c.maxEnergy * 0.025 * dt, 0, c.maxEnergy);
+    if (p.buffs.overcharge) { c.hp = Math.max(1, c.hp - c.maxHp * 0.05 * dt); }
+    // Rewind snapshot ring buffer (~4s ago)
+    p.rewindAcc = (p.rewindAcc || 0) + dt;
+    if (p.rewindAcc >= 0.5) {
+      p.rewindAcc = 0;
+      p.rewindHistory = p.rewindHistory || [];
+      p.rewindHistory.push({ hp: c.hp, mana: c.mana, energy: c.energy });
+      if (p.rewindHistory.length > 8) p.rewindHistory.shift();
+      p.rewindSnap = p.rewindHistory[0];
+    }
     tickPlayerStatuses(c, dt);
 
     let moving = false;
@@ -174,6 +189,8 @@ function KrezcentQuest() {
         p.dir = Math.atan2(dy, dx);
         let spd = p.speed;
         if (p.buffs.charge) spd *= 1.1;
+        if (p.buffs.quickstep) spd *= 1.25;
+        if (p.buffs.footwork) spd *= 1.15;
         if (p.slow > 0) spd *= 0.5;
         if (p.sky > 0) spd *= 1.3;
         if (hasStatus(c, 'freeze')) spd *= 0.55;
@@ -234,24 +251,69 @@ function KrezcentQuest() {
 
     // Projectiles
     w.projectiles = w.projectiles.filter(pr => {
+      // Homing: gently steer toward the nearest living monster
+      if (pr.homing && pr.fromPlayer && w.maze) {
+        let best = null, bd = 1e9;
+        for (const m of w.maze.monsters) { if (m.hp <= 0) continue; const d = Math.hypot(m.x * 40 + 20 - pr.x, m.y * 40 + 20 - pr.y); if (d < bd) { bd = d; best = m; } }
+        if (best) {
+          const sp = Math.hypot(pr.vx, pr.vy) || 400;
+          const cur2 = Math.atan2(pr.vy, pr.vx);
+          const want = Math.atan2(best.y * 40 + 20 - pr.y, best.x * 40 + 20 - pr.x);
+          let da = want - cur2; while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI;
+          const na = cur2 + Math.max(-0.14, Math.min(0.14, da));
+          pr.vx = Math.cos(na) * sp; pr.vy = Math.sin(na) * sp;
+        }
+      }
+      // Return arc (boomerang / chakram): curve back to the player past the apex
+      if (pr.returns && pr.fromPlayer) {
+        pr.age = (pr.age || 0) + dt;
+        if (pr.age > pr.turnAt) {
+          if (!pr.cleared && pr.hitSet) { pr.hitSet.clear(); pr.cleared = true; }
+          const sp = Math.hypot(pr.vx, pr.vy) || 320;
+          const a = Math.atan2(p.y - pr.y, p.x - pr.x);
+          pr.vx = Math.cos(a) * sp; pr.vy = Math.sin(a) * sp;
+          if (Math.hypot(pr.x - p.x, pr.y - p.y) < 24) return false;
+        }
+      }
       pr.x += pr.vx * dt;
       pr.y += pr.vy * dt;
       pr.life -= dt;
-      if (pr.life <= 0) return false;
-      if (collidesWall(pr.x, pr.y, true)) return false;
+      pr.spin = (pr.spin || 0) + dt * 18;
+      if (pr.life <= 0) { if (pr.explodeRadius) explodeProjectile(pr); return false; }
+      if (collidesWall(pr.x, pr.y, true)) {
+        if (pr.bounces && pr.bounces > 0) {
+          pr.bounces -= 1;
+          if (!collidesWall(pr.x - pr.vx * dt * 2, pr.y, true)) pr.vx = -pr.vx;
+          else if (!collidesWall(pr.x, pr.y - pr.vy * dt * 2, true)) pr.vy = -pr.vy;
+          else { pr.vx = -pr.vx; pr.vy = -pr.vy; }
+          pr.x += pr.vx * dt; pr.y += pr.vy * dt;
+        } else { if (pr.explodeRadius) explodeProjectile(pr); return false; }
+      }
       if (pr.fromPlayer && w.maze) {
         for (const m of w.maze.monsters) {
           if (m.hp <= 0) continue;
+          if (pr.hitSet && pr.hitSet.has(m)) continue;
           const mx = m.x * 40 + 20, my = m.y * 40 + 20;
           if (Math.hypot(pr.x - mx, pr.y - my) < 22) {
-            damageMonster(m, pr.dmg, pr.aff);
-            if (!pr.pierce) return false;
+            let d = pr.dmg;
+            if (pr.pierceRamp) d *= (1 + (pr.pierced || 0) * pr.pierceRamp);
+            if (pr.longshot) d *= 1 + pr.longshot * Math.min(1, Math.hypot(pr.x - pr.ox, pr.y - pr.oy) / (pr.maxRange || 300));
+            damageMonster(m, d, pr.aff);
+            if (pr.poison) applyMonsterDot(m, pr.poison.dps, pr.poison.dur, '#9ccc65');
+            if (pr.knockback) pushMonster(m, p.x, p.y, pr.knockback);
+            if (pr.explodeRadius) { explodeProjectile(pr); return false; }
+            if (pr.pierce) { pr.pierced = (pr.pierced || 0) + 1; if (pr.hitSet) pr.hitSet.add(m); }
+            else return false;
           }
         }
-        if (!w.maze.boss.defeated && w.maze.bossHp != null) {
+        if (!w.maze.boss.defeated && w.maze.bossHp != null && !pr.hitBoss) {
           if (Math.hypot(pr.x - w.maze.bossPx, pr.y - w.maze.bossPy) < 35) {
-            damageBoss(pr.dmg, pr.aff);
-            return false;
+            let d = pr.dmg;
+            if (pr.pierceRamp) d *= (1 + (pr.pierced || 0) * pr.pierceRamp);
+            if (pr.longshot) d *= 1 + pr.longshot * Math.min(1, Math.hypot(pr.x - pr.ox, pr.y - pr.oy) / (pr.maxRange || 300));
+            damageBoss(d, pr.aff);
+            if (pr.explodeRadius) { explodeProjectile(pr); return false; }
+            if (pr.pierce) pr.hitBoss = true; else return false;
           }
         }
       } else if (!pr.fromPlayer) {
@@ -266,6 +328,18 @@ function KrezcentQuest() {
 
     w.effects = w.effects.filter(ef => {
       ef.life -= dt;
+      // Orbit/nova that follow the player track its position each frame
+      if (ef.follow) { ef.x = p.x; ef.y = p.y; }
+      // Lingering damage fields tick every 0.4s
+      if (ef.type === 'field' && ef.fromPlayer && w.maze) {
+        ef.tickAcc = (ef.tickAcc || 0) + dt;
+        if (ef.tickAcc >= 0.4) {
+          ef.tickAcc = 0;
+          const per = ef.dmg * 0.18;
+          for (const m of w.maze.monsters) { if (m.hp <= 0) continue; if (Math.hypot(m.x * 40 + 20 - ef.x, m.y * 40 + 20 - ef.y) < ef.radius) damageMonster(m, per, ef.aff); }
+          if (!w.maze.boss.defeated && w.maze.bossHp != null && Math.hypot(w.maze.bossPx - ef.x, w.maze.bossPy - ef.y) < ef.radius + 20) damageBoss(per, ef.aff);
+        }
+      }
       if (ef.delay !== undefined) {
         ef.delay -= dt;
         if (ef.delay <= 0 && !ef.detonated) {
@@ -298,6 +372,12 @@ function KrezcentQuest() {
           m.lunge = 0; m.lungeTarget = null;
         }
         if (m.hp <= 0) continue;
+        if (m.dots && m.dots.length) {
+          for (const d of m.dots) { d.t -= dt; d.acc += dt; if (d.acc >= 0.5) { const tk = Math.ceil(d.dps * d.acc); m.hp -= tk; addFloat(m.x * 40 + 20, m.y * 40 + 8, '-' + tk, d.color); d.acc = 0; } }
+          m.dots = m.dots.filter(d => d.t > 0);
+          if (m.hp <= 0) { onMonsterDeath(m); continue; }
+        }
+        if (m.freeze > 0) m.freeze -= dt;
         if (m.stun > 0) { m.stun -= dt; continue; }
         if (m.slow > 0) m.slow -= dt;
         const t = MONSTER_TYPES[m.type];
@@ -351,7 +431,12 @@ function KrezcentQuest() {
 
       if (w.maze.boss && !w.maze.boss.defeated) {
         if (w.maze.bossHp == null) initBoss(w);
-        updateBoss(w, c, p, dt);
+        if (w.maze.bossDots && w.maze.bossDots.length) {
+          for (const d of w.maze.bossDots) { d.t -= dt; d.acc += dt; if (d.acc >= 0.5) { const tk = Math.ceil(d.dps * d.acc); w.maze.bossHp -= tk; addFloat(w.maze.bossPx, w.maze.bossPy - 30, '-' + tk, d.color); d.acc = 0; } }
+          w.maze.bossDots = w.maze.bossDots.filter(d => d.t > 0);
+          if (w.maze.bossHp <= 0) onBossDefeat();
+        }
+        if (!w.maze.boss.defeated) updateBoss(w, c, p, dt);
       }
     }
 
@@ -647,12 +732,31 @@ function KrezcentQuest() {
     let mult = affinityMultiplier(aff, Object.keys(c.affinities));
     const wpn = WEAPONS[c.weapon];
     if (wpn?.defense) dmg *= (1 - wpn.defense);
+    if (p.buffs.ironskin) dmg *= 0.75;
+    if (p.buffs.bulwark) dmg *= 0.4;
     const final = Math.floor(dmg * mult);
-    c.hp = clamp(c.hp - final, 0, c.maxHp);
+    if (p.buffs.immortal) { c.hp = Math.max(1, c.hp - final); }
+    else c.hp = clamp(c.hp - final, 0, c.maxHp);
     addFloat(p.x, p.y - 30, '-' + final, '#ff5252');
+    // thorns (spike shield): reflect a fraction of the hit back at nearby attackers
+    if (wpn?.mech === 'thorns' && final > 0 && w.maze) {
+      const reflect = final * (wpn.mechVal || 0.4);
+      for (const m of w.maze.monsters) {
+        if (m.hp <= 0) continue;
+        if (Math.hypot(m.x * 40 + 20 - p.x, m.y * 40 + 20 - p.y) < 70) { damageMonster(m, reflect, null); break; }
+      }
+    }
     AudioMgr.play('bonk');
     p.invuln = 0.4;
     if (c.hp <= 0) onPlayerDeath();
+  }
+  function rollDungeonWeapon(floor) {
+    const pool = DROPPABLE_WEAPONS.filter(k => (WEAPONS[k].dropMin || 1) <= floor);
+    if (!pool.length) return null;
+    const total = pool.reduce((s, k) => s + (WEAPONS[k].dropWeight || 1), 0);
+    let r = rand() * total;
+    for (const k of pool) { r -= (WEAPONS[k].dropWeight || 1); if (r <= 0) return k; }
+    return pool[pool.length - 1];
   }
   function onMonsterDeath(m) {
     const c = charRef.current;
@@ -668,8 +772,8 @@ function KrezcentQuest() {
       addItemToInventory({ key: `trophy_${grade}`, name: `${grade}-grade Monster Trophy`, grade, isTrophy: true });
     }
     if (rand() < 0.012) {
-      const weaponKey = pick(Object.keys(WEAPONS));
-      if (!c.ownedWeapons.includes(weaponKey)) {
+      const weaponKey = rollDungeonWeapon(world.current.floor);
+      if (weaponKey && !c.ownedWeapons.includes(weaponKey)) {
         c.ownedWeapons.push(weaponKey);
         setMsg(`New weapon acquired: ${WEAPONS[weaponKey].n}! Check the Blacksmith.`);
       }
@@ -692,8 +796,8 @@ function KrezcentQuest() {
     addItemToInventory({ key: `trophy_${grade}`, name: `${grade}-grade Boss Trophy`, grade, isTrophy: true });
     const dropChance = def.unique ? 0.6 : 0.25;
     if (rand() < dropChance) {
-      const weaponKey = pick(Object.keys(WEAPONS));
-      if (!c.ownedWeapons.includes(weaponKey)) {
+      const weaponKey = rollDungeonWeapon(world.current.floor);
+      if (weaponKey && !c.ownedWeapons.includes(weaponKey)) {
         c.ownedWeapons.push(weaponKey);
         setMsg(`Boss dropped a weapon: ${WEAPONS[weaponKey].n}!`);
       }
@@ -761,61 +865,262 @@ function KrezcentQuest() {
     }
   }
 
+  // ===== Update 5 weapon-mechanic helpers =====
+  function applyMonsterDot(m, dps, dur, color) {
+    if (!m.dots) m.dots = [];
+    m.dots.push({ dps, t: dur, acc: 0, color: color || '#ff7043' });
+  }
+  function applyBossDot(dps, dur, color) {
+    const w = world.current; if (!w.maze) return;
+    if (!w.maze.bossDots) w.maze.bossDots = [];
+    w.maze.bossDots.push({ dps, t: dur, acc: 0, color: color || '#ff7043' });
+  }
+  function freezeMonster(m, dur) { m.stun = Math.max(m.stun || 0, dur); m.freeze = Math.max(m.freeze || 0, dur); }
+  function pushMonster(m, fromX, fromY, dist) {
+    const mx = m.x * 40 + 20, my = m.y * 40 + 20;
+    let dx = mx - fromX, dy = my - fromY; const d = Math.hypot(dx, dy) || 1; dx /= d; dy /= d;
+    const nx = m.x + dx * dist / 40, ny = m.y + dy * dist / 40;
+    if (canMonsterStand(nx, m.y)) m.x = nx;
+    if (canMonsterStand(m.x, ny)) m.y = ny;
+  }
+  function pullMonster(m, toX, toY, dist) {
+    const mx = m.x * 40 + 20, my = m.y * 40 + 20;
+    let dx = toX - mx, dy = toY - my; const d = Math.hypot(dx, dy) || 1; dx /= d; dy /= d;
+    const nx = m.x + dx * dist / 40, ny = m.y + dy * dist / 40;
+    if (canMonsterStand(nx, m.y)) m.x = nx;
+    if (canMonsterStand(m.x, ny)) m.y = ny;
+  }
+  function monstersInRadius(cx, cy, r) {
+    const w = world.current; if (!w.maze) return [];
+    return w.maze.monsters.filter(m => m.hp > 0 && Math.hypot(m.x * 40 + 20 - cx, m.y * 40 + 20 - cy) < r);
+  }
+  function explodeProjectile(pr) {
+    const w = world.current;
+    w.effects.push({ x: pr.x, y: pr.y, type: 'aoe', life: 0.4, color: pr.color || '#ff9800', radius: pr.explodeRadius });
+    if (!w.maze) return;
+    for (const m of w.maze.monsters) { if (m.hp <= 0) continue; if (Math.hypot(m.x * 40 + 20 - pr.x, m.y * 40 + 20 - pr.y) < pr.explodeRadius) damageMonster(m, pr.dmg * 0.8, pr.aff); }
+    if (!w.maze.boss.defeated && w.maze.bossHp != null && Math.hypot(w.maze.bossPx - pr.x, w.maze.bossPy - pr.y) < pr.explodeRadius + 20) damageBoss(pr.dmg * 0.8, pr.aff);
+  }
+  function projColor(proj) {
+    switch (proj) {
+      case 'arrow': case 'magic_arrow': return '#fff59d';
+      case 'bolt': case 'ballista_bolt': return '#d7ccc8';
+      case 'knife': return '#eceff1';
+      case 'stone': case 'boulder': return '#a1887f';
+      case 'shuriken': case 'chakram': return '#cfd8dc';
+      case 'boomerang': return '#bcaaa4';
+      case 'dart': return '#aed581';
+      case 'pellet': return '#ffd54f';
+      case 'trident': return '#26c6da';
+      case 'wave': return '#b388ff';
+      default: return '#fff';
+    }
+  }
+  function projSpeed(wpn) {
+    switch (wpn.proj) {
+      case 'boulder': return 300;
+      case 'boomerang': case 'chakram': return 360;
+      case 'ballista_bolt': return 560;
+      case 'magic_arrow': return 400;
+      case 'pellet': return 480;
+      default: return 500;
+    }
+  }
+  function swingColor(wpn) {
+    switch (wpn.mech) {
+      case 'burn': return '#ff7043';
+      case 'freeze': return '#80deea';
+      case 'chain_lightning': return '#fff176';
+      case 'vampiric': return '#e53935';
+      case 'gravity': return '#9575cd';
+      case 'execute': return '#b388ff';
+      case 'whirl': return '#b3e5fc';
+      default: return '#fff';
+    }
+  }
+  function spawnWeaponProjectiles(wpn, p, ang, dmg) {
+    const w = world.current;
+    const mech = wpn.mech;
+    const baseColor = projColor(wpn.proj);
+    const speed = projSpeed(wpn);
+    const life = Math.max(0.25, wpn.range / speed);
+    let count = 1, spread = 0;
+    if (mech === 'fan3') { count = 3; spread = 0.12; }
+    else if (mech === 'spread5') { count = 5; spread = 0.16; }
+    else if (mech === 'shotgun') { count = 7; spread = 0.13; }
+    const base = {};
+    if (wpn.pierce || mech === 'pierce_bonus' || mech === 'piercer' || mech === 'orbit_return') base.pierce = true;
+    if (mech === 'pierce_bonus') base.pierceRamp = wpn.mechVal || 0.15;
+    if (mech === 'piercer') base.knockback = wpn.mechVal || 90;
+    if (mech === 'ricochet') base.bounces = wpn.mechVal || 2;
+    if (mech === 'return' || mech === 'orbit_return') { base.returns = true; base.turnAt = life * 0.45; base.age = 0; }
+    if (mech === 'homing') base.homing = true;
+    if (mech === 'explosive') base.explodeRadius = wpn.mechVal || 90;
+    if (mech === 'poison') base.poison = { dps: wpn.mechVal || 10, dur: 5 };
+    if (mech === 'longshot') { base.longshot = wpn.mechVal || 0.5; base.ox = p.x; base.oy = p.y; base.maxRange = wpn.range; }
+    const mk = (a) => {
+      const pr = { x: p.x, y: p.y, vx: Math.cos(a) * speed, vy: Math.sin(a) * speed, life, dmg, aff: null, fromPlayer: true, color: baseColor, proj: wpn.proj, ...base };
+      if (pr.pierce) pr.hitSet = new Set();
+      if (wpn.proj === 'ballista_bolt' || wpn.proj === 'boulder' || wpn.proj === 'trident') pr.big = true;
+      w.projectiles.push(pr);
+    };
+    if (count === 1) mk(ang);
+    else { const start = -(count - 1) / 2; for (let i = 0; i < count; i++) mk(ang + (start + i) * spread); }
+  }
+  function spawnWaveAttack(wpn, p, ang, dmg, power) {
+    const w = world.current;
+    w.effects.push({ x: p.x, y: p.y, type: 'slash', swing: 'spin', ang, range: wpn.range + 30, arc: 160, life: 0.24, color: '#b388ff' });
+    if (!w.maze) return;
+    for (const m of w.maze.monsters) {
+      if (m.hp <= 0) continue;
+      const mx = m.x * 40 + 20, my = m.y * 40 + 20;
+      if (Math.hypot(mx - p.x, my - p.y) > wpn.range + 40) continue;
+      const a = Math.atan2(my - p.y, mx - p.x); let da = Math.abs(a - ang); if (da > Math.PI) da = 2 * Math.PI - da;
+      if (da > 1.4) continue;
+      const wave = m.maxHp * (wpn.mechVal || 0.2) * power;
+      damageMonster(m, Math.max(dmg * power, wave), null);
+    }
+    if (!w.maze.boss.defeated && w.maze.bossHp != null && Math.hypot(w.maze.bossPx - p.x, w.maze.bossPy - p.y) < wpn.range + 60) {
+      damageBoss(Math.max(dmg * power, w.maze.bossMaxHp * 0.03 * power), null);
+    }
+  }
+  function bossInArc(p, ang, range, arcR, isWhirl) {
+    const w = world.current;
+    const bd = Math.hypot(w.maze.bossPx - p.x, w.maze.bossPy - p.y);
+    if (bd > range + 20) return false;
+    if (isWhirl) return true;
+    const a = Math.atan2(w.maze.bossPy - p.y, w.maze.bossPx - p.x);
+    let da = Math.abs(a - ang); if (da > Math.PI) da = 2 * Math.PI - da;
+    return da < arcR;
+  }
+
   function doBasicAttack() {
     const c = charRef.current; if (!c) return;
     const w = world.current; const p = w.player;
     if (p.stun > 0 || p.sky > 0) return;
     const wpn = WEAPONS[c.weapon];
     const now = performance.now();
-    const cd = 600 / wpn.spd;
+    const cd = (600 / wpn.spd) / (p.buffs.frenzy ? 1.4 : 1);
     if (now - p.lastAttack < cd) return;
     p.lastAttack = now;
     AudioMgr.play('attack');
     const cur = vpRef.current;
     const ang = Math.atan2(w.mouse.y - cur.h / 2, w.mouse.x - cur.w / 2);
     p.dir = ang;
+    const mech = wpn.mech;
+
     let dmg = wpn.dmg * (1 + (c.level - 1) * 0.05);
     if (p.buffs.boost) dmg *= 1.2;
     if (p.buffs.rage) dmg *= 1.3;
+    if (p.buffs.apex) dmg *= 1.8;
+    if (p.buffs.overcharge) dmg *= 1.5;
     if (p.buffs.thorn) { dmg *= 1.05; delete p.buffs.thorn; }
     if (p.buffs.double) dmg *= 2;
-    if (wpn.crit && rand() < wpn.crit) dmg *= 2;
-    if (wpn.ranged) {
-      const extras = wpn.pierce ? { pierce: true } : {};
-      w.projectiles.push({ x: p.x, y: p.y, vx: Math.cos(ang) * 500, vy: Math.sin(ang) * 500, life: wpn.range / 500, dmg, fromPlayer: true, color: '#fff', ...extras });
-    } else {
-      const arcR = (wpn.arc * Math.PI / 180) / 2;
-      const hits = wpn.multi || 1;
-      if (w.maze) {
-        for (const m of w.maze.monsters) {
-          if (m.hp <= 0) continue;
-          const mx = m.x * 40 + 20, my = m.y * 40 + 20;
-          const md = Math.hypot(mx - p.x, my - p.y);
-          if (md < wpn.range) {
-            const mang = Math.atan2(my - p.y, mx - p.x);
-            let da = Math.abs(mang - ang);
-            if (da > Math.PI) da = 2 * Math.PI - da;
-            if (da < arcR) {
-              for (let h = 0; h < hits; h++) {
-                damageMonster(m, dmg, null);
-                if (wpn.stun && rand() < wpn.stun) m.stun = 1.0;
-                if (wpn.lifesteal) c.hp = clamp(c.hp + dmg * wpn.lifesteal, 0, c.maxHp);
-              }
-            }
-          }
-        }
-        if (!w.maze.boss.defeated && w.maze.bossHp != null) {
-          const bd = Math.hypot(w.maze.bossPx - p.x, w.maze.bossPy - p.y);
-          if (bd < wpn.range + 20) {
-            const bang = Math.atan2(w.maze.bossPy - p.y, w.maze.bossPx - p.x);
-            let da = Math.abs(bang - ang);
-            if (da > Math.PI) da = 2 * Math.PI - da;
-            if (da < arcR) for (let h = 0; h < hits; h++) damageBoss(dmg, null);
-          }
-        }
-      }
-      w.effects.push({ x: p.x, y: p.y, type: 'slash', ang, range: wpn.range, arc: wpn.arc, life: 0.18, color: '#fff' });
+    if (mech === 'combo') {
+      if (now - (p.comboTime || 0) < 1500) p.comboCount = (p.comboCount || 0) + 1; else p.comboCount = 0;
+      p.comboTime = now;
+      dmg *= (1 + p.comboCount * (wpn.mechVal || 0.08));
     }
+    const isCrit = wpn.crit && rand() < wpn.crit;
+    if (isCrit) dmg *= 2;
+
+    // ----- RANGED -----
+    if (wpn.ranged) { spawnWeaponProjectiles(wpn, p, ang, dmg); return; }
+
+    // ----- MP wave (magic sword) replaces the swing -----
+    if (mech === 'mpwave') {
+      const cost = c.maxMana * 0.1;
+      const enough = c.mana >= cost;
+      c.mana = Math.max(0, c.mana - (enough ? cost : c.mana));
+      spawnWaveAttack(wpn, p, ang, dmg, enough ? 1 : 0.25);
+      setChar({ ...c });
+      return;
+    }
+
+    // ----- Trident: alternate freeze-thrust / piercing throw -----
+    if (mech === 'trident') {
+      p.tridentThrow = !p.tridentThrow;
+      if (p.tridentThrow) {
+        const pr = { x: p.x, y: p.y, vx: Math.cos(ang) * 520, vy: Math.sin(ang) * 520, life: wpn.range / 180, dmg: dmg * 1.2, aff: 'Water', fromPlayer: true, color: '#26c6da', proj: 'trident', pierce: true, hitSet: new Set(), knockback: 50, big: true };
+        w.projectiles.push(pr);
+        w.effects.push({ x: p.x, y: p.y, type: 'slash', swing: 'thrust', ang, range: wpn.range, arc: 30, life: 0.16, color: '#26c6da' });
+        return;
+      }
+    }
+
+    // ----- MELEE -----
+    const isWhirl = mech === 'whirl' || wpn.arc >= 360;
+    const arcR = isWhirl ? Math.PI : (wpn.arc * Math.PI / 180) / 2;
+    const hits = (mech === 'doublestrike') ? 2 : (wpn.multi || 1);
+
+    if (w.maze) {
+      const inArc = (tx, ty) => {
+        const md = Math.hypot(tx - p.x, ty - p.y);
+        if (md > wpn.range) return false;
+        if (isWhirl) return true;
+        const a = Math.atan2(ty - p.y, tx - p.x);
+        let da = Math.abs(a - ang); if (da > Math.PI) da = 2 * Math.PI - da;
+        // lash (whip): treat the swing as a thin line so it hits everything along its length
+        if (mech === 'lash') return da < 0.32;
+        return da < arcR;
+      };
+      const targets = [];
+      for (const m of w.maze.monsters) { if (m.hp <= 0) continue; if (inArc(m.x * 40 + 20, m.y * 40 + 20)) targets.push(m); }
+      const dmgMul = (mech === 'cleave' && targets.length >= 2) ? 1 + (wpn.mechVal || 0.15) : 1;
+
+      if (mech === 'gravity') {
+        for (const m of monstersInRadius(p.x, p.y, wpn.mechVal || 120)) pullMonster(m, p.x, p.y, 50);
+        w.effects.push({ x: p.x, y: p.y, type: 'aoe', life: 0.35, color: '#7e57c2', radius: wpn.mechVal || 120 });
+      }
+
+      for (const m of targets) {
+        let d = dmg * dmgMul;
+        if (mech === 'reap' && m.hp < m.maxHp * 0.25) d *= 2.2;
+        if (mech === 'armor_break') d *= 1.2;
+        // execute weak non-bosses outright
+        if (mech === 'execute' && m.hp < m.maxHp * (wpn.mechVal || 0.12)) {
+          m.hp = 0; onMonsterDeath(m); c.hp = clamp(c.hp + c.maxHp * 0.08, 0, c.maxHp); continue;
+        }
+        for (let h = 0; h < hits && m.hp > 0; h++) damageMonster(m, d, null);
+        if (m.hp > 0) {
+          if (mech === 'bleed') applyMonsterDot(m, wpn.mechVal || 4, 3, '#e53935');
+          if (mech === 'crit_bleed' && isCrit) applyMonsterDot(m, wpn.mechVal || 8, 4, '#e53935');
+          if (mech === 'burn') { applyMonsterDot(m, wpn.mechVal || 12, 4, '#ff7043'); w.effects.push({ x: m.x * 40 + 20, y: m.y * 40 + 20, type: 'aoe', life: 0.3, color: '#ff7043', radius: 18 }); }
+          if (mech === 'freeze' && rand() < 0.3) freezeMonster(m, wpn.mechVal || 1.2);
+          if (mech === 'stun' && wpn.stun && rand() < wpn.stun) m.stun = Math.max(m.stun || 0, wpn.mechVal || 1);
+          if (mech === 'knockback') pushMonster(m, p.x, p.y, wpn.mechVal || 60);
+          if (mech === 'pull') pullMonster(m, p.x, p.y, wpn.mechVal || 70);
+          if (mech === 'chain_lightning') {
+            const arcs = monstersInRadius(m.x * 40 + 20, m.y * 40 + 20, 130).filter(o => o !== m).slice(0, 3);
+            for (const o of arcs) { damageMonster(o, d * (wpn.mechVal || 0.5), 'Lightning'); w.effects.push({ x: o.x * 40 + 20, y: o.y * 40 + 20, type: 'aoe', life: 0.2, color: '#fff176', radius: 16 }); }
+          }
+        } else if (mech === 'execute' || mech === 'void_edge') {
+          c.hp = clamp(c.hp + c.maxHp * 0.08, 0, c.maxHp);
+        }
+        const lifeFrac = (mech === 'vampiric') ? (wpn.mechVal || 0.35) : (mech === 'reap' ? 0.1 : (wpn.lifesteal || 0));
+        if (lifeFrac) c.hp = clamp(c.hp + d * lifeFrac, 0, c.maxHp);
+      }
+
+      if (mech === 'quake') {
+        w.effects.push({ x: p.x, y: p.y, type: 'aoe', life: 0.4, color: '#8d6e63', radius: wpn.mechVal || 70 });
+        for (const m of monstersInRadius(p.x, p.y, wpn.mechVal || 70)) damageMonster(m, dmg * 0.4, null);
+        if (!w.maze.boss.defeated && w.maze.bossHp != null && Math.hypot(w.maze.bossPx - p.x, w.maze.bossPy - p.y) < (wpn.mechVal || 70) + 20) damageBoss(dmg * 0.4, null);
+      }
+
+      // boss melee
+      if (!w.maze.boss.defeated && w.maze.bossHp != null && bossInArc(p, ang, wpn.range, arcR, isWhirl)) {
+        let bd = dmg * dmgMul;
+        if (mech === 'armor_break') bd *= 1.2;
+        for (let h = 0; h < hits; h++) damageBoss(bd, null);
+        if (mech === 'bleed') applyBossDot(wpn.mechVal || 4, 3, '#e53935');
+        if (mech === 'crit_bleed' && isCrit) applyBossDot(wpn.mechVal || 8, 4, '#e53935');
+        if (mech === 'burn') applyBossDot(wpn.mechVal || 12, 4, '#ff7043');
+        const lf = (mech === 'vampiric') ? (wpn.mechVal || 0.35) : (wpn.lifesteal || 0);
+        if (lf) c.hp = clamp(c.hp + bd * lf, 0, c.maxHp);
+      }
+    }
+
+    w.effects.push({ x: p.x, y: p.y, type: 'slash', swing: wpn.swing || 'slash', ang, range: wpn.range, arc: isWhirl ? 360 : wpn.arc, life: 0.18, color: swingColor(wpn) });
   }
   function useAttribute(idx) {
     const c = charRef.current; if (!c) return;
@@ -866,6 +1171,52 @@ function KrezcentQuest() {
       case 'replenish': c.hp = c.maxHp; c.mana = c.maxMana; break;
       case 'slash': killNearest(); c.energy = 0; break;
       case 'timestop': stunAll(4); break;
+      // ===== Update 5: new attributes =====
+      // F-grade
+      case 'twitch': { const a = rand() * Math.PI * 2; p.x += Math.cos(a) * 24; p.y += Math.sin(a) * 24; if (collidesWall(p.x, p.y, false)) { p.x -= Math.cos(a) * 24; p.y -= Math.sin(a) * 24; } p.invuln = 0.15; break; }
+      case 'flick': dealAtAim(6, null); break;
+      case 'whistle': { const m = findNearestMonster(); if (m) m.stun = Math.max(m.stun || 0, 1); break; }
+      case 'stretch': p.buffs.energyRegen = 2; break;
+      case 'pebble': { dealAtAim(10, null); const m = findNearestMonster(); if (m) m.stun = Math.max(m.stun || 0, 0.4); break; }
+      case 'hop': p.x += Math.cos(p.dir) * 60; p.y += Math.sin(p.dir) * 60; if (collidesWall(p.x, p.y, false)) { p.x -= Math.cos(p.dir) * 60; p.y -= Math.sin(p.dir) * 60; } p.invuln = 0.3; break;
+      // E-grade
+      case 'sidestep': { const a = p.dir + Math.PI / 2; p.x += Math.cos(a) * 70; p.y += Math.sin(a) * 70; if (collidesWall(p.x, p.y, false)) { p.x -= Math.cos(a) * 70; p.y -= Math.sin(a) * 70; } p.invuln = 0.5; break; }
+      case 'vault': p.x += Math.cos(p.dir) * 150; p.y += Math.sin(p.dir) * 150; if (collidesWall(p.x, p.y, false)) { p.x -= Math.cos(p.dir) * 150; p.y -= Math.sin(p.dir) * 150; } p.invuln = 0.4; break;
+      case 'jab': dealAtAim(18, null); break;
+      case 'smokelet': blindNearest(1); break;
+      case 'dartstep': { p.x += Math.cos(p.dir) * 120; p.y += Math.sin(p.dir) * 120; if (collidesWall(p.x, p.y, false)) { p.x -= Math.cos(p.dir) * 120; p.y -= Math.sin(p.dir) * 120; } p.invuln = 0.3; const m = findNearestMonster(); if (m) damageMonster(m, 12, null); break; }
+      // D-grade
+      case 'snare': { const m = findNearestMonster(); if (m) { m.stun = Math.max(m.stun || 0, 2); m.freeze = Math.max(m.freeze || 0, 2); } break; }
+      case 'dazzle': for (const m of monstersInRadius(p.x, p.y, 160)) m.aiCooldown = 1.5; break;
+      case 'quickstep': p.buffs.quickstep = 4; break;
+      case 'parry': p.buffs.reflect = 5; p.shield = (p.shield || 0) + 60; break;
+      case 'bashlet': { const m = findNearestMonster(); if (m) { damageMonster(m, 20, null); pushMonster(m, p.x, p.y, 70); } break; }
+      case 'ironskin': p.buffs.ironskin = 4; break;
+      // C-grade
+      case 'regen': p.buffs.regen = 5; break;
+      case 'cleanse': c.statusEffects = []; p.blind = 0; p.slow = 0; break;
+      case 'focus': p.buffs.focus = 5; break;
+      case 'warcry': for (const m of monstersInRadius(p.x, p.y, 170)) { m.stun = Math.max(m.stun || 0, 2); } break;
+      case 'lull': for (const m of monstersInRadius(p.x, p.y, 170)) m.slow = Math.max(m.slow || 0, 4); break;
+      case 'footwork': p.buffs.footwork = 6; p.buffs.quickstep = 6; break;
+      // B-grade
+      case 'frenzy': p.buffs.frenzy = 5; break;
+      case 'blink': p.x += Math.cos(p.dir) * 250; p.y += Math.sin(p.dir) * 250; if (collidesWall(p.x, p.y, false)) { p.x -= Math.cos(p.dir) * 250; p.y -= Math.sin(p.dir) * 250; } p.invuln = 0.3; break;
+      case 'fortify': p.shield = (p.shield || 0) + 200; break;
+      case 'siphon': drainNearest(0.12); break;
+      case 'quake': for (const m of monstersInRadius(p.x, p.y, 160)) m.stun = Math.max(m.stun || 0, 1.5); w.effects.push({ x: p.x, y: p.y, type: 'aoe', life: 0.4, color: '#8d6e63', radius: 160 }); break;
+      case 'mirror': p.buffs.mirror = 3; break;
+      // A-grade
+      case 'overcharge': p.buffs.overcharge = 4; break;
+      case 'vanish': p.buffs.vanish = 3; p.sky = 3; break;
+      case 'bulwark': p.buffs.bulwark = 4; break;
+      // S-grade
+      case 'apex': p.buffs.apex = 6; break;
+      case 'rewind': { const snap = p.rewindSnap; if (snap) { c.hp = snap.hp; c.mana = snap.mana; c.energy = snap.energy; setMsg('Rewound to 4s ago'); } else { c.hp = clamp(c.hp + c.maxHp * 0.3, 0, c.maxHp); } break; }
+      case 'immortal': p.buffs.immortal = 5; break;
+      case 'annihilate': w.effects.push({ x: p.x + Math.cos(p.dir) * 120, y: p.y + Math.sin(p.dir) * 120, type: 'aoe', life: 0.6, delay: 0.05, dmg: 600, aff: null, radius: 130, fromPlayer: true, color: '#ff1744' }); break;
+      case 'dominion': for (const m of monstersInRadius(p.x, p.y, 400)) { m.stun = Math.max(m.stun || 0, 5); m.slow = Math.max(m.slow || 0, 5); } break;
+      case 'ascend': c.hp = c.maxHp; c.mana = c.maxMana; p.buffs.apex = 4; p.invuln = 4; break;
     }
   }
   function dealAtAim(dmg, aff) {
@@ -920,39 +1271,184 @@ function KrezcentQuest() {
     let mult = 1;
     const wpn = WEAPONS[c.weapon];
     if (wpn?.manaBoost) mult += wpn.manaBoost;
+    if (wpn?.mech === 'spell_echo') mult += (wpn.mechVal || 0.25);
+    if (p.buffs.focus) mult += 0.2;
     if (p.buffs.boost) mult *= 1.2;
     if (p.buffs.double) mult *= 2;
     if (p.buffs.rage) mult *= 1.3;
+    if (p.buffs.apex) mult *= 1.8;
     fireAbility(abil, entry.aff, mult);
+    if (wpn?.mech === 'spell_echo' && rand() < 0.2) {
+      setMsg(`${abil.n} echoed!`);
+      setTimeout(() => { try { fireAbility(abil, entry.aff, mult * 0.6); } catch (e) {} }, 140);
+    }
     grantAffinityExp(entry.aff, 5);
     setChar({ ...c });
   }
+
+  // Element family for picking a visual treatment when firing abilities.
+  function affKind(aff) {
+    if (['Fire', 'Lava'].includes(aff)) return 'fire';
+    if (['Water', 'Ice', 'Blood'].includes(aff)) return 'water';
+    if (['Lightning', 'Weather'].includes(aff)) return 'lightning';
+    if (['Earth', 'Metal', 'Nature'].includes(aff)) return 'earth';
+    if (['Air', 'Poison Gas'].includes(aff)) return 'air';
+    if (['Light', 'Time'].includes(aff)) return 'light';
+    if (['Darkness', 'Space'].includes(aff)) return 'dark';
+    return 'arcane';
+  }
+
   function fireAbility(abil, aff, mult) {
     const w = world.current; const p = w.player; const c = charRef.current;
     const cur = vpRef.current;
     const ang = Math.atan2(w.mouse.y - cur.h / 2, w.mouse.x - cur.w / 2);
     const color = AFFS[aff]?.color || SUB_COLOR[aff] || '#fff';
+    const fam = affKind(aff);
     const dmg = abil.d * mult;
     if (abil.k === 'projectile') {
-      w.projectiles.push({ x: p.x, y: p.y, vx: Math.cos(ang) * 450, vy: Math.sin(ang) * 450, life: 1.5, dmg, aff, fromPlayer: true, color, big: true });
-    } else if (abil.k === 'aoe' || abil.k === 'ultimate') {
-      const r = abil.k === 'ultimate' ? 250 : 130;
-      w.effects.push({ x: p.x, y: p.y, type: 'aoe', life: 0.6, delay: 0.1, dmg, aff, radius: r, fromPlayer: true, color });
-    } else if (abil.k === 'cone') {
-      for (let i = -2; i <= 2; i++) {
-        const a = ang + i * 0.2;
-        w.projectiles.push({ x: p.x, y: p.y, vx: Math.cos(a) * 380, vy: Math.sin(a) * 380, life: 1.3, dmg: dmg / 2, aff, fromPlayer: true, color });
+      const sp = 470;
+      w.projectiles.push({ x: p.x, y: p.y, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp, life: 1.6, dmg, aff, fromPlayer: true, color, big: true, spell: fam, trail: true });
+      w.effects.push({ x: p.x + Math.cos(ang) * 20, y: p.y + Math.sin(ang) * 20, type: 'spellburst', life: 0.22, color, radius: 22, fam });
+
+    } else if (abil.k === 'homing_orb') {
+      // Slow, seeking orb that curves into the nearest enemy.
+      w.projectiles.push({ x: p.x, y: p.y, vx: Math.cos(ang) * 300, vy: Math.sin(ang) * 300, life: 2.4, dmg, aff, fromPlayer: true, color, big: true, spell: fam, trail: true, homing: true });
+      w.effects.push({ x: p.x, y: p.y, type: 'spellburst', life: 0.25, color, radius: 20, fam });
+
+    } else if (abil.k === 'pierce_line') {
+      // A fast lance that passes through every enemy in its path.
+      w.projectiles.push({ x: p.x, y: p.y, vx: Math.cos(ang) * 620, vy: Math.sin(ang) * 620, life: 0.9, dmg, aff, fromPlayer: true, color, big: true, spell: fam, trail: true, pierce: true, hitSet: new Set() });
+      w.effects.push({ x: p.x, y: p.y, type: 'beam', life: 0.18, ang, len: 120, color, fam });
+
+    } else if (abil.k === 'beam') {
+      castBeam(p, ang, dmg, aff, color, fam);
+
+    } else if (abil.k === 'chain') {
+      // Hits nearest enemy, then arcs to several more with lightning links.
+      castChain(p, ang, dmg, aff, color);
+
+    } else if (abil.k === 'melee') {
+      // A close, powerful elemental strike in front of the player (a real melee spell).
+      castSpellMelee(p, ang, dmg, aff, color, fam);
+
+    } else if (abil.k === 'slam') {
+      // Telegraphed ground slam at the aim point — heavy single burst.
+      const tx = p.x + Math.cos(ang) * 120, ty = p.y + Math.sin(ang) * 120;
+      w.effects.push({ x: tx, y: ty, type: 'slam', life: 0.7, delay: 0.35, dmg, aff, radius: 95, fromPlayer: true, color, fam });
+
+    } else if (abil.k === 'barrage') {
+      // A volley of small bursts raining over an area in front of the player.
+      const cx = p.x + Math.cos(ang) * 120, cy = p.y + Math.sin(ang) * 120;
+      for (let i = 0; i < 6; i++) {
+        const ox = (rand() - 0.5) * 150, oy = (rand() - 0.5) * 150;
+        w.effects.push({ x: cx + ox, y: cy + oy, type: 'nova', life: 0.45, delay: 0.1 + i * 0.08, dmg: dmg / 3, aff, radius: 55, fromPlayer: true, color, fam });
       }
+
+    } else if (abil.k === 'orbit') {
+      // Spinning orbs circle the player, damaging everything around.
+      w.effects.push({ x: p.x, y: p.y, type: 'orbit', life: 1.1, dmg, aff, radius: 95, fromPlayer: true, color, fam, follow: true });
+      // damage in a ring around the player a couple times
+      for (let i = 0; i < 3; i++) w.effects.push({ x: p.x, y: p.y, type: 'nova', life: 0.4, delay: i * 0.3, dmg: dmg / 3, aff, radius: 100, fromPlayer: true, color, fam, follow: true });
+
+    } else if (abil.k === 'dot_field') {
+      // A lingering hazardous field that ticks damage over time.
+      const tx = p.x + Math.cos(ang) * 90, ty = p.y + Math.sin(ang) * 90;
+      w.effects.push({ x: tx, y: ty, type: 'field', life: 3.0, dmg, aff, radius: 90, fromPlayer: true, color, fam, tickAcc: 0 });
+
+    } else if (abil.k === 'aoe') {
+      w.effects.push({ x: p.x, y: p.y, type: 'nova', life: 0.55, delay: 0.08, dmg, aff, radius: 140, fromPlayer: true, color, fam });
+
+    } else if (abil.k === 'nova') {
+      w.effects.push({ x: p.x, y: p.y, type: 'nova', life: 0.6, delay: 0.06, dmg, aff, radius: 160, fromPlayer: true, color, fam });
+
+    } else if (abil.k === 'ultimate') {
+      w.effects.push({ x: p.x, y: p.y, type: 'ultimate', life: 1.0, delay: 0.12, dmg, aff, radius: 270, fromPlayer: true, color, fam });
+      w.effects.push({ x: p.x, y: p.y, type: 'nova', life: 0.5, delay: 0.0, dmg: dmg * 0.4, aff, radius: 150, fromPlayer: true, color, fam });
+
+    } else if (abil.k === 'cone') {
+      const n = 7;
+      for (let i = 0; i < n; i++) {
+        const a = ang + (i - (n - 1) / 2) * 0.16;
+        w.projectiles.push({ x: p.x, y: p.y, vx: Math.cos(a) * 420, vy: Math.sin(a) * 420, life: 0.9, dmg: dmg / 2.5, aff, fromPlayer: true, color, spell: fam });
+      }
+      w.effects.push({ x: p.x, y: p.y, type: 'cone', life: 0.3, ang, arc: 70, range: 150, color, fam });
+
     } else if (abil.k === 'shield') {
-      p.shield = (p.shield || 0) + 150;
+      p.shield = (p.shield || 0) + 150 + dmg * 0.5;
+      w.effects.push({ x: p.x, y: p.y, type: 'spellburst', life: 0.5, color, radius: 34, fam });
+
     } else if (abil.k === 'dash') {
-      const dist = 200;
+      const dist = 220; const ox = p.x, oy = p.y;
       p.x += Math.cos(ang) * dist; p.y += Math.sin(ang) * dist;
-      if (collidesWall(p.x, p.y, false)) { p.x -= Math.cos(ang) * dist; p.y -= Math.sin(ang) * dist; }
+      if (collidesWall(p.x, p.y, false)) { p.x = ox; p.y = oy; }
       p.invuln = 0.5;
+      for (let i = 1; i <= 4; i++) w.effects.push({ x: ox + (p.x - ox) * i / 5, y: oy + (p.y - oy) * i / 5, type: 'spellburst', life: 0.3, color, radius: 14, fam });
+      w.effects.push({ x: p.x, y: p.y, type: 'nova', life: 0.4, delay: 0, dmg, aff, radius: 90, fromPlayer: true, color, fam });
+
     } else if (abil.k === 'heal') {
-      c.hp = clamp(c.hp + c.maxHp * 0.3, 0, c.maxHp);
+      c.hp = clamp(c.hp + c.maxHp * 0.3 + dmg, 0, c.maxHp);
+      w.effects.push({ x: p.x, y: p.y, type: 'spellburst', life: 0.6, color: '#69f0ae', radius: 36, fam: 'light' });
+      addFloat(p.x, p.y - 30, '+heal', '#69f0ae');
     }
+  }
+
+  function castSpellMelee(p, ang, dmg, aff, color, fam) {
+    const w = world.current;
+    const range = 75, arcR = 1.1;
+    const hit = (tx, ty) => {
+      if (Math.hypot(tx - p.x, ty - p.y) > range) return false;
+      const a = Math.atan2(ty - p.y, tx - p.x); let da = Math.abs(a - ang); if (da > Math.PI) da = 2 * Math.PI - da;
+      return da < arcR;
+    };
+    if (w.maze) {
+      for (const m of w.maze.monsters) { if (m.hp <= 0) continue; if (hit(m.x * 40 + 20, m.y * 40 + 20)) damageMonster(m, dmg, aff); }
+      if (!w.maze.boss.defeated && w.maze.bossHp != null && hit(w.maze.bossPx, w.maze.bossPy)) damageBoss(dmg, aff);
+    }
+    w.effects.push({ x: p.x, y: p.y, type: 'slash', swing: 'chop', ang, range, arc: 130, life: 0.22, color });
+    w.effects.push({ x: p.x + Math.cos(ang) * 40, y: p.y + Math.sin(ang) * 40, type: 'spellburst', life: 0.3, color, radius: 26, fam });
+  }
+
+  function castChain(p, ang, dmg, aff, color) {
+    const w = world.current; if (!w.maze) return;
+    let cx = p.x, cy = p.y; const hitOrder = []; const used = new Set();
+    for (let hop = 0; hop < 5; hop++) {
+      let best = null, bd = (hop === 0 ? 360 : 180);
+      for (const m of w.maze.monsters) { if (m.hp <= 0 || used.has(m)) continue; const d = Math.hypot(m.x * 40 + 20 - cx, m.y * 40 + 20 - cy); if (d < bd) { bd = d; best = m; } }
+      if (!best) break;
+      used.add(best); hitOrder.push([cx, cy, best.x * 40 + 20, best.y * 40 + 20]);
+      damageMonster(best, dmg * (hop === 0 ? 1 : 0.6), aff);
+      cx = best.x * 40 + 20; cy = best.y * 40 + 20;
+    }
+    if (!hitOrder.length) {
+      // no targets: fire a short bolt forward so it isn't wasted
+      hitOrder.push([p.x, p.y, p.x + Math.cos(ang) * 200, p.y + Math.sin(ang) * 200]);
+    }
+    w.effects.push({ x: p.x, y: p.y, type: 'chain', life: 0.3, color, segs: hitOrder });
+    if (!w.maze.boss.defeated && w.maze.bossHp != null && Math.hypot(w.maze.bossPx - p.x, w.maze.bossPy - p.y) < 360) damageBoss(dmg, aff);
+  }
+
+  function castBeam(p, ang, dmg, aff, color, fam) {
+    const w = world.current;
+    const maxR = 460; let endR = maxR;
+    for (let r = 20; r <= maxR; r += 20) {
+      if (collidesWall(p.x + Math.cos(ang) * r, p.y + Math.sin(ang) * r, true)) { endR = r; break; }
+    }
+    if (w.maze) {
+      for (const m of w.maze.monsters) {
+        if (m.hp <= 0) continue;
+        const mx = m.x * 40 + 20, my = m.y * 40 + 20;
+        if (Math.hypot(mx - p.x, my - p.y) > endR + 20) continue;
+        const a = Math.atan2(my - p.y, mx - p.x);
+        let da = Math.abs(a - ang); if (da > Math.PI) da = 2 * Math.PI - da;
+        if (da < 0.18) damageMonster(m, dmg, aff);
+      }
+      if (!w.maze.boss.defeated && w.maze.bossHp != null) {
+        const a = Math.atan2(w.maze.bossPy - p.y, w.maze.bossPx - p.x);
+        let da = Math.abs(a - ang); if (da > Math.PI) da = 2 * Math.PI - da;
+        if (Math.hypot(w.maze.bossPx - p.x, w.maze.bossPy - p.y) < endR + 30 && da < 0.22) damageBoss(dmg, aff);
+      }
+    }
+    w.effects.push({ x: p.x, y: p.y, type: 'beam', life: 0.25, ang, len: endR, color, fam });
   }
 
   function tryInteract() {
@@ -977,8 +1473,8 @@ function KrezcentQuest() {
     const coins = Math.floor(20 + rand() * 50 + world.current.floor * 5);
     c.coins += coins;
     if (rand() < 0.05) {
-      const weaponKey = pick(Object.keys(WEAPONS));
-      if (!c.ownedWeapons.includes(weaponKey)) {
+      const weaponKey = rollDungeonWeapon(world.current.floor);
+      if (weaponKey && !c.ownedWeapons.includes(weaponKey)) {
         c.ownedWeapons.push(weaponKey);
         setMsg(`Chest contained a weapon: ${WEAPONS[weaponKey].n}!`);
       }
@@ -1122,12 +1618,28 @@ function KrezcentQuest() {
     for (const ef of w.effects) {
       const ex = ef.x - cam.x, ey = ef.y - cam.y;
       if (ef.type === 'slash') {
-        ctx.strokeStyle = '#fff'; ctx.lineWidth = 5;
-        ctx.globalAlpha = ef.life / 0.18;
-        ctx.beginPath();
-        ctx.arc(ex, ey, ef.range, ef.ang - (ef.arc * Math.PI / 360), ef.ang + (ef.arc * Math.PI / 360));
-        ctx.stroke();
-        ctx.globalAlpha = 1; ctx.lineWidth = 1;
+        const col = ef.color || '#fff';
+        ctx.strokeStyle = col; ctx.shadowColor = col; ctx.shadowBlur = 10;
+        ctx.globalAlpha = Math.max(0, ef.life / 0.2);
+        const sw = ef.swing || 'slash';
+        const reach = ef.range || 50;
+        if (sw === 'thrust' || sw === 'poke' || sw === 'jab') {
+          ctx.lineWidth = sw === 'poke' ? 3 : 5; ctx.lineCap = 'round';
+          const r2 = sw === 'jab' ? reach * 0.6 : reach;
+          ctx.beginPath();
+          ctx.moveTo(ex + Math.cos(ef.ang) * 10, ey + Math.sin(ef.ang) * 10);
+          ctx.lineTo(ex + Math.cos(ef.ang) * r2, ey + Math.sin(ef.ang) * r2);
+          ctx.stroke();
+        } else if (sw === 'spin' || ef.arc >= 360) {
+          ctx.lineWidth = 5;
+          ctx.beginPath(); ctx.arc(ex, ey, reach, 0, Math.PI * 2); ctx.stroke();
+        } else {
+          ctx.lineWidth = sw === 'chop' ? 7 : 5;
+          ctx.beginPath();
+          ctx.arc(ex, ey, reach, ef.ang - (ef.arc * Math.PI / 360), ef.ang + (ef.arc * Math.PI / 360));
+          ctx.stroke();
+        }
+        ctx.globalAlpha = 1; ctx.lineWidth = 1; ctx.shadowBlur = 0;
       } else if (ef.type === 'bomb') {
         if (ef.delay > 0) {
           ctx.fillStyle = '#333'; ctx.beginPath(); ctx.arc(ex, ey, 10, 0, Math.PI * 2); ctx.fill();
@@ -1143,16 +1655,178 @@ function KrezcentQuest() {
         ctx.globalAlpha = 0.4 * (ef.life / 0.6);
         ctx.beginPath(); ctx.arc(ex, ey, ef.radius, 0, Math.PI * 2); ctx.fill();
         ctx.globalAlpha = 1;
+      } else if (ef.type === 'spellburst') {
+        const k = 1 - Math.max(0, ef.life) / 0.6;
+        ctx.save(); ctx.shadowColor = ef.color; ctx.shadowBlur = 20;
+        ctx.globalAlpha = Math.max(0, ef.life * 2);
+        ctx.fillStyle = ef.color;
+        ctx.beginPath(); ctx.arc(ex, ey, (ef.radius || 20) * (0.5 + k), 0, Math.PI * 2); ctx.fill();
+        ctx.globalAlpha = Math.max(0, ef.life * 3);
+        ctx.fillStyle = '#fff';
+        ctx.beginPath(); ctx.arc(ex, ey, (ef.radius || 20) * 0.4, 0, Math.PI * 2); ctx.fill();
+        ctx.restore(); ctx.globalAlpha = 1;
+      } else if (ef.type === 'nova') {
+        const total = 0.55; const k = 1 - Math.max(0, ef.life) / total;
+        const r = ef.radius * k;
+        ctx.save(); ctx.shadowColor = ef.color; ctx.shadowBlur = 24;
+        ctx.strokeStyle = ef.color; ctx.lineWidth = 6 * (ef.life / total) + 2;
+        ctx.globalAlpha = Math.max(0, ef.life / total);
+        ctx.beginPath(); ctx.arc(ex, ey, r, 0, Math.PI * 2); ctx.stroke();
+        // inner fill flash
+        ctx.globalAlpha = 0.25 * (ef.life / total);
+        ctx.fillStyle = ef.color;
+        ctx.beginPath(); ctx.arc(ex, ey, r * 0.8, 0, Math.PI * 2); ctx.fill();
+        // family flair
+        if (ef.fam === 'lightning') {
+          ctx.globalAlpha = ef.life / total; ctx.lineWidth = 2;
+          for (let i = 0; i < 8; i++) { const a = i / 8 * Math.PI * 2; ctx.beginPath(); ctx.moveTo(ex, ey); ctx.lineTo(ex + Math.cos(a) * r, ey + Math.sin(a) * r); ctx.stroke(); }
+        } else if (ef.fam === 'fire') {
+          ctx.globalAlpha = 0.5 * (ef.life / total); ctx.fillStyle = '#ffd54f';
+          for (let i = 0; i < 10; i++) { const a = i / 10 * Math.PI * 2; ctx.beginPath(); ctx.arc(ex + Math.cos(a) * r * 0.9, ey + Math.sin(a) * r * 0.9, 5, 0, Math.PI * 2); ctx.fill(); }
+        }
+        ctx.restore(); ctx.globalAlpha = 1; ctx.lineWidth = 1;
+      } else if (ef.type === 'ultimate') {
+        const total = 1.0; const k = 1 - Math.max(0, ef.life) / total;
+        ctx.save(); ctx.shadowColor = ef.color; ctx.shadowBlur = 30;
+        // screen flash
+        ctx.globalAlpha = 0.18 * (ef.life / total); ctx.fillStyle = ef.color;
+        ctx.fillRect(0, 0, W, H);
+        // expanding rings
+        for (let ring = 0; ring < 3; ring++) {
+          const rr = ef.radius * Math.min(1, k + ring * 0.18);
+          ctx.globalAlpha = Math.max(0, (ef.life / total) - ring * 0.15);
+          ctx.strokeStyle = ring === 1 ? '#fff' : ef.color; ctx.lineWidth = 8 - ring * 2;
+          ctx.beginPath(); ctx.arc(ex, ey, rr, 0, Math.PI * 2); ctx.stroke();
+        }
+        // rotating spokes
+        ctx.globalAlpha = 0.6 * (ef.life / total); ctx.strokeStyle = ef.color; ctx.lineWidth = 3;
+        for (let i = 0; i < 12; i++) { const a = i / 12 * Math.PI * 2 + k * 4; ctx.beginPath(); ctx.moveTo(ex, ey); ctx.lineTo(ex + Math.cos(a) * ef.radius * k, ey + Math.sin(a) * ef.radius * k); ctx.stroke(); }
+        ctx.restore(); ctx.globalAlpha = 1; ctx.lineWidth = 1;
+      } else if (ef.type === 'cone') {
+        ctx.save(); ctx.shadowColor = ef.color; ctx.shadowBlur = 16;
+        ctx.fillStyle = ef.color; ctx.globalAlpha = Math.max(0, ef.life / 0.3) * 0.5;
+        ctx.beginPath(); ctx.moveTo(ex, ey);
+        ctx.arc(ex, ey, ef.range, ef.ang - ef.arc * Math.PI / 360, ef.ang + ef.arc * Math.PI / 360);
+        ctx.closePath(); ctx.fill();
+        ctx.restore(); ctx.globalAlpha = 1;
+      } else if (ef.type === 'beam') {
+        ctx.save(); ctx.shadowColor = ef.color; ctx.shadowBlur = 24;
+        ctx.globalAlpha = Math.max(0, ef.life / 0.25);
+        const exb = ex + Math.cos(ef.ang) * ef.len, eyb = ey + Math.sin(ef.ang) * ef.len;
+        ctx.strokeStyle = ef.color; ctx.lineWidth = 14; ctx.lineCap = 'round';
+        ctx.beginPath(); ctx.moveTo(ex, ey); ctx.lineTo(exb, eyb); ctx.stroke();
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 5;
+        ctx.beginPath(); ctx.moveTo(ex, ey); ctx.lineTo(exb, eyb); ctx.stroke();
+        ctx.restore(); ctx.globalAlpha = 1; ctx.lineWidth = 1;
+      } else if (ef.type === 'slam') {
+        ctx.save(); ctx.shadowColor = ef.color; ctx.shadowBlur = 20;
+        if (ef.delay > 0) {
+          // telegraph ring shrinking inward
+          const k = Math.max(0, ef.delay) / 0.35;
+          ctx.strokeStyle = ef.color; ctx.globalAlpha = 0.8; ctx.lineWidth = 3;
+          ctx.beginPath(); ctx.arc(ex, ey, ef.radius, 0, Math.PI * 2); ctx.stroke();
+          ctx.globalAlpha = 0.5; ctx.beginPath(); ctx.arc(ex, ey, ef.radius * (1 - k), 0, Math.PI * 2); ctx.stroke();
+        } else {
+          const k = 1 - Math.max(0, ef.life) / 0.35;
+          ctx.fillStyle = ef.color; ctx.globalAlpha = Math.max(0, 0.6 - k * 0.6);
+          ctx.beginPath(); ctx.arc(ex, ey, ef.radius * (0.6 + k * 0.5), 0, Math.PI * 2); ctx.fill();
+          // cracks
+          ctx.strokeStyle = '#fff'; ctx.globalAlpha = Math.max(0, ef.life * 2); ctx.lineWidth = 3;
+          for (let i = 0; i < 8; i++) { const a = i / 8 * Math.PI * 2; ctx.beginPath(); ctx.moveTo(ex, ey); ctx.lineTo(ex + Math.cos(a) * ef.radius, ey + Math.sin(a) * ef.radius); ctx.stroke(); }
+        }
+        ctx.restore(); ctx.globalAlpha = 1; ctx.lineWidth = 1;
+      } else if (ef.type === 'orbit') {
+        ctx.save(); ctx.shadowColor = ef.color; ctx.shadowBlur = 18;
+        const spin = (1 - Math.max(0, ef.life) / 1.1) * 12;
+        ctx.fillStyle = ef.color; ctx.globalAlpha = Math.max(0, ef.life / 1.1);
+        for (let i = 0; i < 5; i++) {
+          const a = spin + i / 5 * Math.PI * 2;
+          ctx.beginPath(); ctx.arc(ex + Math.cos(a) * ef.radius, ey + Math.sin(a) * ef.radius, 7, 0, Math.PI * 2); ctx.fill();
+        }
+        ctx.restore(); ctx.globalAlpha = 1;
+      } else if (ef.type === 'field') {
+        ctx.save(); ctx.shadowColor = ef.color; ctx.shadowBlur = 14;
+        ctx.fillStyle = ef.color; ctx.globalAlpha = 0.18 + 0.08 * Math.sin(w.timeOfDay * 6);
+        ctx.beginPath(); ctx.arc(ex, ey, ef.radius, 0, Math.PI * 2); ctx.fill();
+        ctx.globalAlpha = 0.4; ctx.strokeStyle = ef.color; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(ex, ey, ef.radius, 0, Math.PI * 2); ctx.stroke();
+        // drifting motes
+        ctx.globalAlpha = 0.5;
+        for (let i = 0; i < 5; i++) { const a = w.timeOfDay * 1.5 + i; const rr = ef.radius * (0.3 + 0.5 * ((i % 3) / 2)); ctx.beginPath(); ctx.arc(ex + Math.cos(a) * rr, ey + Math.sin(a) * rr, 3, 0, Math.PI * 2); ctx.fill(); }
+        ctx.restore(); ctx.globalAlpha = 1; ctx.lineWidth = 1;
+      } else if (ef.type === 'chain') {
+        ctx.save(); ctx.shadowColor = ef.color; ctx.shadowBlur = 16;
+        ctx.globalAlpha = Math.max(0, ef.life / 0.3);
+        for (const [x1, y1, x2, y2] of (ef.segs || [])) {
+          // jagged lightning between points
+          ctx.strokeStyle = ef.color; ctx.lineWidth = 4; ctx.beginPath();
+          ctx.moveTo(x1 - cam.x, y1 - cam.y);
+          const steps = 4;
+          for (let s = 1; s < steps; s++) {
+            const tx = x1 + (x2 - x1) * s / steps + (rand() - 0.5) * 18;
+            const ty = y1 + (y2 - y1) * s / steps + (rand() - 0.5) * 18;
+            ctx.lineTo(tx - cam.x, ty - cam.y);
+          }
+          ctx.lineTo(x2 - cam.x, y2 - cam.y); ctx.stroke();
+          ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke();
+        }
+        ctx.restore(); ctx.globalAlpha = 1; ctx.lineWidth = 1;
       }
     }
     // Projectiles
     for (const pr of w.projectiles) {
-      ctx.fillStyle = pr.color || '#fff';
-      ctx.shadowColor = pr.color || '#fff'; ctx.shadowBlur = 12;
-      ctx.beginPath();
-      ctx.arc(pr.x - cam.x, pr.y - cam.y, pr.big ? 11 : 5, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.shadowBlur = 0;
+      const x = pr.x - cam.x, y = pr.y - cam.y;
+      const pang = Math.atan2(pr.vy, pr.vx);
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.shadowColor = pr.color || '#fff'; ctx.shadowBlur = 10;
+      ctx.fillStyle = pr.color || '#fff'; ctx.strokeStyle = pr.color || '#fff';
+      switch (pr.proj) {
+        case 'arrow': case 'magic_arrow': case 'bolt': case 'ballista_bolt': {
+          ctx.rotate(pang); const len = pr.big ? 24 : 14;
+          ctx.lineWidth = pr.big ? 4 : 2.5; ctx.lineCap = 'round';
+          ctx.beginPath(); ctx.moveTo(-len / 2, 0); ctx.lineTo(len / 2, 0); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(len / 2, 0); ctx.lineTo(len / 2 - 6, -4); ctx.lineTo(len / 2 - 6, 4); ctx.closePath(); ctx.fill();
+          if (pr.proj === 'magic_arrow') { ctx.shadowBlur = 18; ctx.beginPath(); ctx.arc(0, 0, 3, 0, Math.PI * 2); ctx.fill(); }
+          break; }
+        case 'knife': case 'dart': case 'trident': {
+          ctx.rotate(pang); ctx.lineWidth = pr.big ? 4 : 2; ctx.lineCap = 'round';
+          ctx.beginPath(); ctx.moveTo(-8, 0); ctx.lineTo(pr.big ? 16 : 10, 0); ctx.stroke();
+          if (pr.proj === 'trident') { ctx.beginPath(); ctx.moveTo(10, -5); ctx.lineTo(17, 0); ctx.lineTo(10, 5); ctx.stroke(); }
+          break; }
+        case 'shuriken': {
+          ctx.rotate(pr.spin || 0); ctx.beginPath();
+          for (let i = 0; i < 4; i++) { const a = i * Math.PI / 2; ctx.lineTo(Math.cos(a) * 8, Math.sin(a) * 8); ctx.lineTo(Math.cos(a + 0.4) * 3, Math.sin(a + 0.4) * 3); }
+          ctx.closePath(); ctx.fill(); break; }
+        case 'chakram': {
+          ctx.rotate(pr.spin || 0); ctx.lineWidth = 3;
+          ctx.beginPath(); ctx.arc(0, 0, 9, 0, Math.PI * 2); ctx.stroke();
+          ctx.beginPath(); ctx.arc(0, 0, 4, 0, Math.PI * 2); ctx.stroke(); break; }
+        case 'boomerang': {
+          ctx.rotate(pr.spin || 0); ctx.lineWidth = 4; ctx.lineCap = 'round';
+          ctx.beginPath(); ctx.moveTo(-9, -2); ctx.quadraticCurveTo(0, -10, 9, -2); ctx.stroke(); break; }
+        case 'boulder': { ctx.beginPath(); ctx.arc(0, 0, 10, 0, Math.PI * 2); ctx.fill(); break; }
+        case 'pellet': { ctx.beginPath(); ctx.arc(0, 0, 3, 0, Math.PI * 2); ctx.fill(); break; }
+        case 'stone': { ctx.beginPath(); ctx.arc(0, 0, 4, 0, Math.PI * 2); ctx.fill(); break; }
+        default: {
+          if (pr.spell || pr.big) {
+            // Glowing orb with a soft trailing comet for affinity spells
+            ctx.shadowBlur = 18;
+            if (pr.trail) {
+              ctx.globalAlpha = 0.35;
+              ctx.beginPath(); ctx.ellipse(-8, 0, 14, 5, pang, 0, Math.PI * 2); ctx.rotate(pang); ctx.fill(); ctx.rotate(-pang);
+              ctx.globalAlpha = 1;
+            }
+            ctx.beginPath(); ctx.arc(0, 0, pr.big ? 9 : 6, 0, Math.PI * 2); ctx.fill();
+            ctx.fillStyle = '#fff';
+            ctx.beginPath(); ctx.arc(0, 0, pr.big ? 4 : 2.5, 0, Math.PI * 2); ctx.fill();
+          } else {
+            ctx.beginPath(); ctx.arc(0, 0, pr.big ? 11 : 5, 0, Math.PI * 2); ctx.fill();
+          }
+        }
+      }
+      ctx.restore();
+      ctx.shadowBlur = 0; ctx.lineWidth = 1;
     }
     // NPCs
     for (const n of w.npcs) drawNpc(ctx, n.x - cam.x, n.y - cam.y, n, w.timeOfDay);
@@ -2112,12 +2786,13 @@ function KrezcentQuest() {
     ctx.fillRect(x + 10, y - 2 - armA, 3, 12);
     ctx.beginPath(); ctx.arc(x, y - 10, 10, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = c.hair;
-    if (c.hairstyle === 'short') { ctx.beginPath(); ctx.arc(x, y - 12, 11, Math.PI, Math.PI * 2); ctx.fill(); }
-    else if (c.hairstyle === 'long') {
+    const hs = c.hairstyle || 'short';
+    if (hs === 'short') { ctx.beginPath(); ctx.arc(x, y - 12, 11, Math.PI, Math.PI * 2); ctx.fill(); }
+    else if (hs === 'long') {
       ctx.beginPath(); ctx.ellipse(x, y - 8, 12, 14, 0, 0, Math.PI * 2); ctx.fill();
       ctx.fillStyle = c.skin; ctx.beginPath(); ctx.arc(x, y - 10, 9, 0, Math.PI * 2); ctx.fill();
       ctx.fillStyle = c.hair; ctx.beginPath(); ctx.arc(x, y - 14, 11, Math.PI * 0.95, Math.PI * 2.05); ctx.fill();
-    } else if (c.hairstyle === 'spiky') {
+    } else if (hs === 'spiky') {
       for (let i = -2; i <= 2; i++) {
         ctx.beginPath();
         ctx.moveTo(x + i * 3.5 - 1.5, y - 14);
@@ -2126,13 +2801,49 @@ function KrezcentQuest() {
         ctx.closePath(); ctx.fill();
       }
       ctx.beginPath(); ctx.arc(x, y - 12, 11, Math.PI, Math.PI * 2); ctx.fill();
-    }
+    } else if (hs === 'mohawk') {
+      ctx.beginPath(); ctx.arc(x, y - 12, 11, Math.PI, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = c.hair;
+      ctx.beginPath(); ctx.moveTo(x - 2, y - 14); ctx.lineTo(x, y - 26); ctx.lineTo(x + 2, y - 14); ctx.closePath(); ctx.fill();
+      ctx.fillRect(x - 2, y - 20, 4, 8);
+    } else if (hs === 'ponytail') {
+      ctx.beginPath(); ctx.arc(x, y - 12, 11, Math.PI, Math.PI * 2); ctx.fill();
+      // tail out the back
+      ctx.beginPath(); ctx.ellipse(x - 12, y - 4, 4, 12, 0.4, 0, Math.PI * 2); ctx.fill();
+    } else if (hs === 'bun') {
+      ctx.beginPath(); ctx.arc(x, y - 12, 11, Math.PI, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(x, y - 22, 5, 0, Math.PI * 2); ctx.fill();
+    } else if (hs === 'curly') {
+      for (let i = -2; i <= 2; i++) ctx.beginPath(), ctx.arc(x + i * 5, y - 16, 5, 0, Math.PI * 2), ctx.fill();
+      ctx.beginPath(); ctx.arc(x, y - 12, 11, Math.PI, Math.PI * 2); ctx.fill();
+    } else if (hs === 'bald') {
+      // no hair
+    } else { ctx.beginPath(); ctx.arc(x, y - 12, 11, Math.PI, Math.PI * 2); ctx.fill(); }
     const eyeOff = Math.cos(p.dir) * 1.2;
     const eyeOffY = Math.sin(p.dir) * 0.8;
     ctx.fillStyle = '#fff';
     ctx.beginPath(); ctx.arc(x - 3, y - 10, 2.2, 0, Math.PI * 2); ctx.arc(x + 3, y - 10, 2.2, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = c.eye;
     ctx.beginPath(); ctx.arc(x - 3 + eyeOff, y - 10 + eyeOffY, 1.2, 0, Math.PI * 2); ctx.arc(x + 3 + eyeOff, y - 10 + eyeOffY, 1.2, 0, Math.PI * 2); ctx.fill();
+    // Facial expression (mouth + brows)
+    const expr = c.expression || 'neutral';
+    ctx.strokeStyle = '#5d3a2a'; ctx.lineWidth = 1.2; ctx.lineCap = 'round';
+    ctx.beginPath();
+    if (expr === 'happy') { ctx.arc(x, y - 5, 3, 0.1 * Math.PI, 0.9 * Math.PI); }
+    else if (expr === 'angry') {
+      ctx.moveTo(x - 4, y - 6); ctx.lineTo(x + 4, y - 6); // flat mouth
+      ctx.moveTo(x - 6, y - 13); ctx.lineTo(x - 1, y - 11); // brows angled in
+      ctx.moveTo(x + 6, y - 13); ctx.lineTo(x + 1, y - 11);
+    } else if (expr === 'cool') {
+      ctx.moveTo(x - 3, y - 5); ctx.lineTo(x + 3, y - 5);
+      // sunglasses
+      ctx.stroke(); ctx.fillStyle = '#111';
+      ctx.fillRect(x - 6, y - 12, 5, 3); ctx.fillRect(x + 1, y - 12, 5, 3);
+      ctx.beginPath();
+    } else if (expr === 'surprised') { ctx.arc(x, y - 5, 2, 0, Math.PI * 2); }
+    else if (expr === 'smug') { ctx.moveTo(x - 3, y - 5); ctx.quadraticCurveTo(x, y - 3, x + 4, y - 6); }
+    else { ctx.moveTo(x - 3, y - 5); ctx.lineTo(x + 3, y - 5); } // neutral
+    ctx.stroke(); ctx.lineWidth = 1;
     drawWeapon(ctx, x, y, p.dir, c.weapon);
     if (p.invuln > 0) {
       ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
@@ -2233,6 +2944,87 @@ function KrezcentQuest() {
           ctx.strokeStyle = '#d8d8e0'; ctx.lineWidth = 3; ctx.lineCap = 'round';
           ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(tipx, tipy); ctx.stroke();
         } break; }
+      case 'throwing_knives': { for (const off of [-4, 0, 4]) { const [hx, hy] = px(8, off); const [tx, ty] = px(22, off);
+        ctx.strokeStyle = '#eceff1'; ctx.lineWidth = 2; ctx.lineCap = 'round';
+        ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(tx, ty); ctx.stroke(); } break; }
+      case 'slingshot': { const [hx, hy] = px(8, 0); const [forkx, forky] = px(20, 0);
+        ctx.strokeStyle = '#8d6e63'; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(forkx, forky); ctx.stroke();
+        const [u1x, u1y] = px(26, -7); const [u2x, u2y] = px(26, 7);
+        ctx.beginPath(); ctx.moveTo(forkx, forky); ctx.lineTo(u1x, u1y); ctx.moveTo(forkx, forky); ctx.lineTo(u2x, u2y); ctx.stroke();
+        ctx.strokeStyle = '#bcaaa4'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(u1x, u1y); ctx.lineTo(u2x, u2y); ctx.stroke(); break; }
+      case 'boomerang': { ctx.strokeStyle = '#bcaaa4'; ctx.lineWidth = 4; ctx.lineCap = 'round';
+        const [a1x, a1y] = px(10, -8); const [cx, cy] = px(22, 0); const [a3x, a3y] = px(10, 8);
+        ctx.beginPath(); ctx.moveTo(a1x, a1y); ctx.quadraticCurveTo(cx + 4, cy, a3x, a3y); ctx.stroke(); break; }
+      case 'shuriken': { const [cx, cy] = px(20, 0); ctx.fillStyle = '#cfd8dc';
+        ctx.save(); ctx.translate(cx, cy); ctx.beginPath();
+        for (let i = 0; i < 4; i++) { const a = i * Math.PI / 2 + dir; ctx.lineTo(Math.cos(a) * 9, Math.sin(a) * 9); ctx.lineTo(Math.cos(a + 0.4) * 3, Math.sin(a + 0.4) * 3); }
+        ctx.closePath(); ctx.fill(); ctx.restore(); break; }
+      case 'chakram': { const [cx, cy] = px(20, 0); ctx.strokeStyle = '#cfd8dc'; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.arc(cx, cy, 10, 0, Math.PI * 2); ctx.stroke();
+        ctx.beginPath(); ctx.arc(cx, cy, 5, 0, Math.PI * 2); ctx.stroke(); break; }
+      case 'blow_dart': { const [hx, hy] = px(6, 0); const [tx, ty] = px(34, 0);
+        ctx.strokeStyle = '#6d4c41'; ctx.lineWidth = 4; ctx.lineCap = 'round';
+        ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(tx, ty); ctx.stroke();
+        ctx.fillStyle = '#aed581'; ctx.beginPath(); ctx.arc(tx, ty, 2.5, 0, Math.PI * 2); ctx.fill(); break; }
+      case 'catapult': { const [bx, by] = px(8, 0); const [ax, ay] = px(28, -10);
+        ctx.strokeStyle = '#5d4037'; ctx.lineWidth = 4;
+        ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(ax, ay); ctx.stroke();
+        ctx.fillStyle = '#a1887f'; ctx.beginPath(); ctx.arc(ax, ay, 6, 0, Math.PI * 2); ctx.fill(); break; }
+      case 'ballista': { const [hx, hy] = px(6, 0); const [tx, ty] = px(34, 0);
+        ctx.strokeStyle = '#5d4037'; ctx.lineWidth = 5;
+        ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(tx, ty); ctx.stroke();
+        const [b1x, b1y] = px(20, -14); const [b2x, b2y] = px(20, 14);
+        ctx.strokeStyle = '#8d6e63'; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(b1x, b1y); ctx.lineTo(b2x, b2y); ctx.stroke(); break; }
+      case 'hand_cannon': { const [hx, hy] = px(8, 0); const [tx, ty] = px(28, 0);
+        ctx.strokeStyle = '#37474f'; ctx.lineWidth = 7; ctx.lineCap = 'round';
+        ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(tx, ty); ctx.stroke();
+        ctx.fillStyle = '#212121'; ctx.beginPath(); ctx.arc(tx, ty, 4, 0, Math.PI * 2); ctx.fill(); break; }
+      case 'magic_bow': { const [cx, cy] = px(20, 0);
+        ctx.strokeStyle = '#80d8ff'; ctx.shadowColor = '#80d8ff'; ctx.shadowBlur = 12; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.arc(cx, cy, 13, dir - Math.PI / 2.2, dir + Math.PI / 2.2); ctx.stroke(); ctx.shadowBlur = 0;
+        const [s1x, s1y] = px(20, -11); const [s2x, s2y] = px(20, 11);
+        ctx.strokeStyle = '#e1f5fe'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(s1x, s1y); ctx.lineTo(s2x, s2y); ctx.stroke(); break; }
+      case 'trident': { const [hx, hy] = px(6, 0); const [tx, ty] = px(40, 0);
+        ctx.strokeStyle = '#00838f'; ctx.lineWidth = 4;
+        ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(tx, ty); ctx.stroke();
+        ctx.strokeStyle = '#26c6da'; ctx.lineWidth = 3;
+        for (const o of [-6, 0, 6]) { const [e1x, e1y] = px(36, o); const [e2x, e2y] = px(46, o); ctx.beginPath(); ctx.moveTo(e1x, e1y); ctx.lineTo(e2x, e2y); ctx.stroke(); } break; }
+      case 'magic_sword': { const [hx, hy] = px(8, 0); const [tipx, tipy] = px(36, 0);
+        ctx.strokeStyle = '#b388ff'; ctx.shadowColor = '#b388ff'; ctx.shadowBlur = 14; ctx.lineWidth = 5; ctx.lineCap = 'round';
+        ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(tipx, tipy); ctx.stroke(); ctx.shadowBlur = 0;
+        const [gxa, gya] = px(8, -6); const [gxb, gyb] = px(8, 6);
+        ctx.strokeStyle = '#7c4dff'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(gxa, gya); ctx.lineTo(gxb, gyb); ctx.stroke(); break; }
+      case 'flame_blade': { const [hx, hy] = px(8, 0); const [tipx, tipy] = px(34, 0);
+        ctx.strokeStyle = '#ff7043'; ctx.shadowColor = '#ff5722'; ctx.shadowBlur = 14; ctx.lineWidth = 5; ctx.lineCap = 'round';
+        ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(tipx, tipy); ctx.stroke(); ctx.shadowBlur = 0; break; }
+      case 'frost_fang': { const [hx, hy] = px(8, 0); const [tipx, tipy] = px(34, 0);
+        ctx.strokeStyle = '#80deea'; ctx.shadowColor = '#26c6da'; ctx.shadowBlur = 12; ctx.lineWidth = 5; ctx.lineCap = 'round';
+        ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(tipx, tipy); ctx.stroke(); ctx.shadowBlur = 0; break; }
+      case 'thunder_spear': { const [hx, hy] = px(6, 0); const [tx, ty] = px(42, 0);
+        ctx.strokeStyle = '#fff176'; ctx.shadowColor = '#ffeb3b'; ctx.shadowBlur = 12; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(tx, ty); ctx.stroke(); ctx.shadowBlur = 0;
+        const [pt1x, pt1y] = px(46, 0); const [pt2x, pt2y] = px(38, -4); const [pt3x, pt3y] = px(38, 4);
+        ctx.fillStyle = '#fff59d'; ctx.beginPath(); ctx.moveTo(pt1x, pt1y); ctx.lineTo(pt2x, pt2y); ctx.lineTo(pt3x, pt3y); ctx.closePath(); ctx.fill(); break; }
+      case 'vampire_scythe': { const [hx, hy] = px(8, 0); const [tx, ty] = px(34, -2);
+        ctx.strokeStyle = '#3e2723'; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(tx, ty); ctx.stroke();
+        ctx.strokeStyle = '#b71c1c'; ctx.shadowColor = '#8b0000'; ctx.shadowBlur = 10; ctx.lineWidth = 4;
+        const [sx, sy] = px(34, -2); const [s2x, s2y] = px(26, -18); const [s3x, s3y] = px(12, -20);
+        ctx.beginPath(); ctx.moveTo(sx, sy); ctx.quadraticCurveTo(s2x, s2y, s3x, s3y); ctx.stroke(); ctx.shadowBlur = 0; break; }
+      case 'gravity_maul': { const [hx, hy] = px(8, 0); const [tx, ty] = px(28, 0);
+        ctx.strokeStyle = '#4a148c'; ctx.lineWidth = 5;
+        ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(tx, ty); ctx.stroke();
+        const [h1x, h1y] = px(22, -11); const [h2x, h2y] = px(34, -11); const [h3x, h3y] = px(34, 11); const [h4x, h4y] = px(22, 11);
+        ctx.fillStyle = '#7e57c2'; ctx.shadowColor = '#9575cd'; ctx.shadowBlur = 10;
+        ctx.beginPath(); ctx.moveTo(h1x, h1y); ctx.lineTo(h2x, h2y); ctx.lineTo(h3x, h3y); ctx.lineTo(h4x, h4y); ctx.closePath(); ctx.fill(); ctx.shadowBlur = 0; break; }
+      case 'void_edge': { const [hx, hy] = px(8, 0); const [tipx, tipy] = px(34, 0);
+        ctx.strokeStyle = '#311b92'; ctx.shadowColor = '#b388ff'; ctx.shadowBlur = 14; ctx.lineWidth = 5; ctx.lineCap = 'round';
+        ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(tipx, tipy); ctx.stroke(); ctx.shadowBlur = 0; break; }
+      case 'storm_fan': { const [cx, cy] = px(16, 0);
+        ctx.strokeStyle = '#b3e5fc'; ctx.shadowColor = '#81d4fa'; ctx.shadowBlur = 8; ctx.lineWidth = 2;
+        for (const a of [-0.5, -0.25, 0, 0.25, 0.5]) { ctx.beginPath(); ctx.moveTo(cx, cy); const [tx, ty] = px(16 + Math.cos(a) * 18, Math.sin(a) * 18); ctx.lineTo(tx, ty); ctx.stroke(); }
+        ctx.shadowBlur = 0; break; }
       default: { const [hx, hy] = px(10, 0); const [tipx, tipy] = px(28, 0);
         ctx.strokeStyle = '#ccc'; ctx.lineWidth = 3;
         ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(tipx, tipy); ctx.stroke(); }
@@ -2275,8 +3067,14 @@ function KrezcentQuest() {
   onSuccess();
 }
 
-  function gradeColor(g) {
-    return { S: 'text-yellow-300', A: 'text-purple-300', B: 'text-blue-300',
+  function abilityTypeLabel(k) {
+    return { projectile: 'bolt', homing_orb: 'homing orb', pierce_line: 'piercing lance', beam: 'beam',
+      chain: 'chain', melee: 'melee', slam: 'ground slam', barrage: 'barrage', orbit: 'orbiting',
+      dot_field: 'damage field', nova: 'nova', aoe: 'blast', ultimate: 'ULTIMATE', cone: 'cone',
+      shield: 'shield', dash: 'blink', heal: 'heal' }[k] || k;
+  }
+
+  function gradeColor(g) {    return { S: 'text-yellow-300', A: 'text-purple-300', B: 'text-blue-300',
       C: 'text-green-300', D: 'text-slate-300', E: 'text-slate-400', F: 'text-slate-500' }[g] || 'text-white';
   }
 
@@ -2351,11 +3149,35 @@ function KrezcentQuest() {
     );
   }
 
+  function CharacterPreview({ hair, eye, skin, hairstyle, expression, weapon }) {
+    const ref = useRef(null);
+    useEffect(() => {
+      const cv = ref.current; if (!cv) return;
+      const ctx = cv.getContext('2d');
+      let raf, t0 = performance.now();
+      const fakeC = { hair, eye, skin, hairstyle, expression, weapon };
+      const draw = () => {
+        const t = (performance.now() - t0) / 1000;
+        ctx.clearRect(0, 0, cv.width, cv.height);
+        // soft backdrop
+        ctx.fillStyle = 'rgba(124,77,255,0.08)';
+        ctx.beginPath(); ctx.arc(cv.width / 2, cv.height / 2 + 10, 46, 0, Math.PI * 2); ctx.fill();
+        const fakeP = { dir: Math.sin(t * 1.2) * 0.9, moving: true, animTime: t, invuln: 0, shield: 0, sky: 0, buffs: {} };
+        drawPlayer(ctx, cv.width / 2, cv.height / 2, fakeC, fakeP);
+        raf = requestAnimationFrame(draw);
+      };
+      draw();
+      return () => cancelAnimationFrame(raf);
+    }, [hair, eye, skin, hairstyle, expression, weapon]);
+    return <canvas ref={ref} width={160} height={150} className="rounded bg-slate-900 border border-slate-700" />;
+  }
+
   function CharacterCreator() {
     const [hair, setHair] = useState('#3b2316');
     const [eye, setEye] = useState('#2196f3');
     const [skin, setSkin] = useState('#f4c2a1');
     const [hairstyle, setHairstyle] = useState('short');
+    const [expression, setExpression] = useState('neutral');
     const [weapon, setWeapon] = useState('sword');
     const [code, setCode] = useState('');
     const [preview, setPreview] = useState(null);
@@ -2392,7 +3214,7 @@ function KrezcentQuest() {
         }
       }
       const newChar = {
-        name: name.trim(), hair, eye, skin, hairstyle, weapon,
+        name: name.trim(), hair, eye, skin, hairstyle, expression, weapon,
         attrs, affinities,
         equippedAttrs: attrs.slice(0, MAX_EQUIPPED_ATTRS).map(a => a.key),
         knownAbilities, equippedAbilityList: [],
@@ -2416,10 +3238,11 @@ function KrezcentQuest() {
       const affinities = JSON.parse(JSON.stringify(cc.affs));
       setPreview({ attrs, affinities, codeNote: cc.note });
     }
-    const hairOptions = ['#3b2316','#000','#f9d71c','#c1440e','#ffffff','#9c27b0','#03a9f4','#e91e63'];
-    const eyeOptions = ['#2196f3','#4caf50','#795548','#ff9800','#9c27b0','#f44336'];
-    const skinOptions = ['#f4c2a1','#deb887','#a08060','#8d5524','#5d3924','#fadbb5'];
-    const hairstyles = ['short','long','spiky'];
+    const hairOptions = ['#3b2316','#000000','#6d4c41','#f9d71c','#c1440e','#ffffff','#9c27b0','#03a9f4','#e91e63','#4caf50','#ff5722','#90a4ae','#7e57c2','#00bcd4'];
+    const eyeOptions = ['#2196f3','#4caf50','#795548','#ff9800','#9c27b0','#f44336','#00bcd4','#ffc107','#e91e63','#607d8b'];
+    const skinOptions = ['#f4c2a1','#deb887','#c68642','#a08060','#8d5524','#5d3924','#fadbb5','#ffe0bd','#3b2219','#e8b89b'];
+    const hairstyles = ['short','long','spiky','mohawk','ponytail','bun','curly','bald'];
+    const expressions = ['neutral','happy','angry','cool','surprised','smug'];
     return (
       <div className="h-full overflow-auto p-6" style={{ background: 'radial-gradient(ellipse at center, #2d1b4e 0%, #1a0f24 70%, #000 100%)', color: 'white' }}>
         <div className="max-w-5xl mx-auto">
@@ -2464,10 +3287,19 @@ function KrezcentQuest() {
               </div>
               <div className="mb-3">
                 <label className="block text-sm text-slate-400 mb-1">Hairstyle</label>
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
                   {hairstyles.map(s => (
                     <button key={s} onClick={() => setHairstyle(s)}
                       className={`px-3 py-1 rounded ${hairstyle === s ? 'bg-purple-700' : 'bg-slate-700 hover:bg-slate-600'}`}>{s}</button>
+                  ))}
+                </div>
+              </div>
+              <div className="mb-3">
+                <label className="block text-sm text-slate-400 mb-1">Expression</label>
+                <div className="flex flex-wrap gap-2">
+                  {expressions.map(s => (
+                    <button key={s} onClick={() => setExpression(s)}
+                      className={`px-3 py-1 rounded ${expression === s ? 'bg-purple-700' : 'bg-slate-700 hover:bg-slate-600'}`}>{s}</button>
                   ))}
                 </div>
               </div>
@@ -2495,13 +3327,16 @@ function KrezcentQuest() {
             </div>
             <div className="bg-slate-800/70 p-4 rounded border border-purple-700">
               <h2 className="text-xl mb-3">Preview</h2>
+              <div className="flex justify-center mb-3">
+                <CharacterPreview hair={hair} eye={eye} skin={skin} hairstyle={hairstyle} expression={expression} weapon={weapon} />
+              </div>
               {preview && hasCode && (
                 <div className="text-sm space-y-2 mb-3">
                   <div className="text-yellow-400 text-xs">⚡ Code applied: {preview.codeNote}</div>
                 </div>
               )}
               <div className="text-xs text-slate-400 italic mb-3">
-                Stats are randomly generated when you click Create Character. Starting HP is 500.
+                Attributes & affinities are randomly generated when you click Create Character. Starting HP is 1000.
               </div>
               <button onClick={buildAndStart}
                 className="w-full py-2 bg-green-700 hover:bg-green-600 rounded font-bold">Create Character</button>
@@ -2617,7 +3452,7 @@ function KrezcentQuest() {
             <div>Weapons owned: {char.ownedWeapons?.length || 1}</div>
           </div>
           <div>
-            <div className="font-bold text-purple-300 mb-1">Attributes ({char.attrs.length}/10)</div>
+            <div className="font-bold text-purple-300 mb-1">Attributes ({char.attrs.length}/{MAX_LEARNED_ATTRS})</div>
             {char.attrs.map((a, i) => (
               <div key={i} className="mb-1">
                 <span className={gradeColor(a.grade)}>[{a.grade}]</span> <span>{ATTRS[a.key]?.n}</span>
@@ -2708,7 +3543,7 @@ function KrezcentQuest() {
                   <div key={i} className="bg-slate-900 px-2 py-1 rounded flex justify-between items-center">
                     <span>
                       <strong style={{ color }}>{e.name}</strong>{' '}
-                      <span className="text-xs text-slate-400">({e.aff} lv{e.lvl} · {e.d}dmg · {e.m}mp · {e.k})</span>
+                      <span className="text-xs text-slate-400">({e.aff} lv{e.lvl} · {e.d}dmg · {e.m}mp · {abilityTypeLabel(e.k)})</span>
                     </span>
                     <button onClick={() => toggleAbility(e)}
                       className={`rounded px-2 py-0.5 text-xs ${equipped ? 'bg-slate-700 text-slate-400' : 'bg-green-700 hover:bg-green-600'}`}>
@@ -2982,7 +3817,7 @@ function KrezcentQuest() {
     const c = char; const g = trainerGrade; const cfg = ATTRIBUTE_TRAINER[g];
     const knownKeys = (c.attrs || []).map(a => a.key);
     function buyTraining() {
-      if (c.attrs.length >= 10) { setMsg('You already know 10 attributes'); return; }
+      if (c.attrs.length >= MAX_LEARNED_ATTRS) { setMsg('You already know the max number of attributes'); return; }
       if (c.coins < cfg.price) { setMsg('Not enough coins'); return; }
       const key = pickAttrByGrade(g, knownKeys);
       if (!key || knownKeys.includes(key)) { setMsg('No new attribute of that grade available — pick a different grade'); return; }
@@ -2993,7 +3828,7 @@ function KrezcentQuest() {
     }
     return (
       <ModalBox title="Attribute Trainer" onClose={() => setModal(null)}>
-        <div className="text-yellow-400 mb-3">🪙 {c.coins} · Known: {c.attrs.length}/10</div>
+        <div className="text-yellow-400 mb-3">🪙 {c.coins} · Known: {c.attrs.length}/{MAX_LEARNED_ATTRS}</div>
         <p className="text-sm text-slate-400 mb-3">Pay to learn a random new attribute at a chosen grade.</p>
         <div className="flex flex-wrap gap-2 mb-3">
           {Object.keys(ATTRIBUTE_TRAINER).map(grade => (
@@ -3009,8 +3844,8 @@ function KrezcentQuest() {
           <div className="flex justify-between items-center">
             <span className="text-yellow-400">🪙 {cfg.price}</span>
             <button onClick={buyTraining}
-              disabled={c.coins < cfg.price || c.attrs.length >= 10}
-              className={`px-3 py-1 rounded ${c.coins < cfg.price || c.attrs.length >= 10 ? 'bg-slate-700 text-slate-400' : 'bg-green-700 hover:bg-green-600'}`}>
+              disabled={c.coins < cfg.price || c.attrs.length >= MAX_LEARNED_ATTRS}
+              className={`px-3 py-1 rounded ${c.coins < cfg.price || c.attrs.length >= MAX_LEARNED_ATTRS ? 'bg-slate-700 text-slate-400' : 'bg-green-700 hover:bg-green-600'}`}>
               Train
             </button>
           </div>

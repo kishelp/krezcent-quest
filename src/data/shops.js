@@ -97,22 +97,12 @@ export const ATTRIBUTE_TRAINER = {
 };
 
 // ---------- WEAPON SHOP (BLACKSMITH) ----------
-// Direct-purchase weapons. Most weapons are best earned from drops/mystery boxes,
-// but a small selection is always available at the blacksmith for high prices.
-export const WEAPON_SHOP = [
-  { key: 'spear',         price: 1500 },
-  { key: 'whip',          price: 2500 },
-  { key: 'knuckles',      price: 3000 },
-  { key: 'chain',         price: 6000 },
-  { key: 'dual_swords',   price: 9000 },
-  { key: 'axe',           price: 14000 },
-  { key: 'morning_star',  price: 22000 },
-  { key: 'katana',        price: 40000 },
-  { key: 'staff',         price: 50000 },
-  { key: 'crossbow',      price: 65000 },
-  { key: 'scythe',        price: 95000 },
-  { key: 'war_hammer',    price: 130000 },
-];
+// Every weapon flagged `shopBuy` is stocked here, priced from its own `price`
+// field and sorted by tier then price (cheapest first).
+export const WEAPON_SHOP = Object.keys(WEAPONS)
+  .filter(k => WEAPONS[k].shopBuy)
+  .sort((a, b) => (WEAPONS[a].tier - WEAPONS[b].tier) || (WEAPONS[a].price - WEAPONS[b].price))
+  .map(k => ({ key: k, price: WEAPONS[k].price }));
 
 // Returns true if the weapon key is a real entry in WEAPONS.
 export function isValidWeaponKey(k) { return !!WEAPONS[k]; }
