@@ -4,7 +4,7 @@ import ReactDOM from 'react-dom/client';
 
 import { ATTRS, ATTRS_BY_GRADE } from './data/attributes.js';
 import { AFFS, SUB_WEAK, SUB_COLOR, ABILITIES, SUB_ABILITIES } from './data/affinities.js';
-import { WEAPONS, STARTER_WEAPONS, DROPPABLE_WEAPONS } from './data/weapons.js';
+import { WEAPONS, STARTER_WEAPONS, DROPPABLE_WEAPONS, weaponDamageAt, weaponUpgradeCost, weaponMaxOutCost, MAX_WEAPON_LEVEL } from './data/weapons.js';
 import { ITEMS, MONSTER_DROP_VALUE, ADMIN_CODES, MAX_STACK } from './data/items.js';
 import { MONSTER_TYPES } from './data/monsters.js';
 import { bossForFloor, BOSS_AI_PATTERNS } from './data/bosses.js';
@@ -15,6 +15,7 @@ import { AudioMgr } from './engine/audio.js';
 import { StorageMgr } from './engine/storage.js';
 import { SaveAdapter } from './engine/save-adapter.js';
 import { generateFloor, updateHazards, updateFog, themeForFloor } from './engine/floor-gen.js';
+import { floorEffect, floorTheme } from './data/floors.js';
 import {
   rand, pick, clamp,
   rollCharacterAttrs, rollCharacterAffinities, pickAttrByGrade,
@@ -43,6 +44,9 @@ function migrateChar(c) {
   if (!c.equippedAbilityList) c.equippedAbilityList = [];
   if (!c.ownedWeapons) c.ownedWeapons = [c.weapon];
   if (!c.ownedWeapons.includes(c.weapon)) c.ownedWeapons.push(c.weapon);
+  // Weapon upgrade levels (Update 8): every owned weapon defaults to level 1.
+  if (!c.weaponLevels) c.weaponLevels = {};
+  for (const wk of c.ownedWeapons) { if (!c.weaponLevels[wk]) c.weaponLevels[wk] = 1; }
   if (!c.statusEffects) c.statusEffects = [];
   return c;
 }
@@ -125,8 +129,13 @@ function KrezcentQuest() {
       const w = world.current;
       const dt = Math.min(0.05, (t - (w.lastFrame || t)) / 1000);
       w.lastFrame = t;
-      if (!modalRef.current) update(dt);
-      drawWorld();
+      try {
+        if (!modalRef.current) update(dt);
+        drawWorld();
+      } catch (err) {
+        // A single bad frame must never permanently freeze the game loop.
+        console.error('[game loop] recovered from error:', err);
+      }
       raf = requestAnimationFrame(loop);
     };
     raf = requestAnimationFrame(loop);
@@ -161,6 +170,9 @@ function KrezcentQuest() {
     if (p.stun > 0) p.stun -= dt;
     if (p.blind > 0) p.blind -= dt;
     if (p.slow > 0) p.slow -= dt;
+    if (p.confused > 0) p.confused -= dt;
+    if (p.silenced > 0) p.silenced -= dt;
+    if (p.slipTimer > 0) p.slipTimer -= dt;
     for (const k of Object.keys(p.buffs)) { p.buffs[k] -= dt; if (p.buffs[k] <= 0) delete p.buffs[k]; }
     // Tick ability/attribute cooldowns
     if (p.cooldowns) { for (const k of Object.keys(p.cooldowns)) { p.cooldowns[k] -= dt; if (p.cooldowns[k] <= 0) delete p.cooldowns[k]; } }
@@ -188,6 +200,7 @@ function KrezcentQuest() {
       if (w.keys['d'] || w.keys['arrowright']) dx += 1;
       if (dx || dy) {
         moving = true;
+        if (p.confused > 0) { dx = -dx; dy = -dy; }
         const len = Math.hypot(dx, dy);
         dx /= len; dy /= len;
         p.dir = Math.atan2(dy, dx);
@@ -202,7 +215,15 @@ function KrezcentQuest() {
         const ny = p.y + dy * spd * dt;
         if (!collidesWall(nx, p.y, false)) p.x = nx;
         if (!collidesWall(p.x, ny, false)) p.y = ny;
+        if (p.slipTimer > 0) { p.slipVx = dx * spd; p.slipVy = dy * spd; }
       }
+    }
+    // Slippery ice: glide a bit after releasing keys
+    if (p.slipTimer > 0 && !moving && (Math.abs(p.slipVx || 0) > 1 || Math.abs(p.slipVy || 0) > 1)) {
+      const sx = p.x + (p.slipVx || 0) * dt, sy = p.y + (p.slipVy || 0) * dt;
+      if (!collidesWall(sx, p.y, false)) p.x = sx;
+      if (!collidesWall(p.x, sy, false)) p.y = sy;
+      p.slipVx = (p.slipVx || 0) * 0.92; p.slipVy = (p.slipVy || 0) * 0.92;
     }
     p.moving = moving;
     if (moving) p.animTime += dt; else p.animTime = 0;
@@ -210,9 +231,21 @@ function KrezcentQuest() {
     p.tileY = Math.floor(p.y / 40);
 
     if (w.maze) {
-      // Fog of war — maze uses a tighter vision radius than other floors
-      const fogRadius = (w.maze.type === 'maze') ? 3 : 5;
+      const fx = w.maze.floorEffect;
+      // Fog of war — maze and 'darkness' floors use a tighter vision radius
+      const fogRadius = (w.maze.type === 'maze' || fx === 'darkness') ? 3 : 5;
       updateFog(w.maze, p.tileX, p.tileY, fogRadius);
+
+      // Per-floor environmental effect
+      applyFloorEffect(w, c, p, dt, fx);
+
+      // Collectable loot pickups — grab on walk-over.
+      if (w.maze.loot) {
+        for (const orb of w.maze.loot) {
+          if (orb.taken) continue;
+          if (Math.hypot(orb.x * 40 + 20 - p.x, orb.y * 40 + 20 - p.y) < 30) collectFloorLoot(orb);
+        }
+      }
 
       // Magma/lava tiles (tile 3) burn the player while standing on them
       const standTile = w.maze.grid[p.tileY] ? w.maze.grid[p.tileY][p.tileX] : undefined;
@@ -343,6 +376,14 @@ function KrezcentQuest() {
           const per = ef.dmg * 0.18;
           for (const m of w.maze.monsters) { if (m.hp <= 0) continue; if (Math.hypot(m.x * 40 + 20 - ef.x, m.y * 40 + 20 - ef.y) < ef.radius) damageMonster(m, per, ef.aff); }
           if (!w.maze.boss.defeated && w.maze.bossHp != null && Math.hypot(w.maze.bossPx - ef.x, w.maze.bossPy - ef.y) < ef.radius + 20) damageBoss(per, ef.aff);
+        }
+      }
+      // Boss-owned lingering fields tick damage onto the player
+      if (ef.type === 'field' && !ef.fromPlayer && w.maze) {
+        ef.tickAcc = (ef.tickAcc || 0) + dt;
+        if (ef.tickAcc >= 0.4) {
+          ef.tickAcc = 0;
+          if (Math.hypot(ef.x - p.x, ef.y - p.y) < ef.radius && p.invuln <= 0 && p.sky <= 0) damagePlayer(ef.dmg * 0.18, ef.aff);
         }
       }
       if (ef.delay !== undefined) {
@@ -500,6 +541,47 @@ function KrezcentQuest() {
     p.stun = Math.max(p.stun, 0.2);
   }
 
+  function applyFloorEffect(w, c, p, dt, fx) {
+    if (!fx || fx === 'none' || fx === 'lavaburn' || fx === 'darkness') return; // lavaburn handled separately; darkness via fog
+    w.effectAcc = (w.effectAcc || 0) + dt;
+    const moving = p.moving;
+    if (fx === 'haze') {
+      // Heat haze: periodic small aim wobble (handled at aim read) + faint damage when standing in it rarely
+      p.aimWobble = 0.12;
+    } else {
+      p.aimWobble = 0;
+    }
+    if (w.effectAcc < 0.5) return;
+    w.effectAcc = 0;
+    switch (fx) {
+      case 'spores':
+        if (moving) { damagePlayer(Math.ceil(c.maxHp * 0.008), 'Poison Gas'); addFloat(p.x, p.y - 28, 'spores', '#9ccc65'); }
+        break;
+      case 'blizzard':
+        p.slow = Math.max(p.slow, 1.2); damagePlayer(Math.ceil(c.maxHp * 0.006), 'Ice');
+        break;
+      case 'radiation':
+        damagePlayer(Math.ceil(c.maxHp * 0.007), null); break;
+      case 'sinking':
+        if (!moving) { p.sinkAcc = (p.sinkAcc || 0) + 0.5; if (p.sinkAcc >= 1.5) { damagePlayer(Math.ceil(c.maxHp * 0.02), null); addFloat(p.x, p.y - 28, 'sinking!', '#d6b23a'); } } else { p.sinkAcc = 0; }
+        break;
+      case 'gravity': {
+        // Periodic pull toward arena center / boss
+        const cx = w.maze.bossPx || (w.maze.W * 20), cy = w.maze.bossPy || (w.maze.H * 20);
+        const d = Math.hypot(cx - p.x, cy - p.y);
+        if (d > 40) { const nx = p.x + (cx - p.x) / d * 26, ny = p.y + (cy - p.y) / d * 26; if (!collidesWall(nx, p.y, false)) p.x = nx; if (!collidesWall(p.x, ny, false)) p.y = ny; }
+        break; }
+      case 'confusion':
+        if (rand() < 0.25) { p.confused = Math.max(p.confused || 0, 1.2); }
+        break;
+      case 'silence':
+        p.silenced = 0.8; break;
+      case 'slippery':
+        p.slipTimer = 0.8; break;
+      default: break;
+    }
+  }
+
   function initBoss(w) {
     const def = bossForFloor(w.floor);
     const fm = 1 + (w.floor - 1) * 0.18;
@@ -519,11 +601,24 @@ function KrezcentQuest() {
     w.maze.bossShield = 0;
     w.maze.bossOrbitAngle = 0;
     w.maze.bossTelegraphTimer = 0;
+    // Scripted-boss state (Update 7 dungeon overhaul)
+    w.maze.bossScript = def.script || null;
+    w.maze.bossPhaseIdx = -1;
+    w.maze.bossMoveIdx = 0;
+    w.maze.bossDmgMult = 1;
+    w.maze.bossSpdMult = 1;
+    w.maze.bossEnraged = false;
+    w.maze.bossStun = 0;
+    w.maze.bossSlow = 0;
+    w.maze.bossFreeze = 0;
+    w.maze.bossDots = [];
     if (def.unique) setMsg(`⚔ ${def.n} — ${def.desc || ''}`);
+    else setMsg(`⚔ ${def.n} — ${def.desc || ''}`);
   }
 
   function updateBoss(w, c, p, dt) {
     const m = w.maze;
+    if (m.bossScript) { runBossScript(w, c, p, dt); return; }
     const def = m.bossData;
     const pat = m.bossAI;
     const dist = Math.hypot(p.x - m.bossPx, p.y - m.bossPy);
@@ -671,6 +766,244 @@ function KrezcentQuest() {
     }
   }
 
+  // ===================== Scripted boss interpreter (Update 7) =====================
+  function bossColorOf(m) { return m.bossColor || AFFS[m.bossAff]?.color || SUB_COLOR[m.bossAff] || '#fff'; }
+
+  function runBossScript(w, c, p, dt) {
+    const m = w.maze;
+    if (!m || !m.boss || m.boss.defeated) return;
+    const script = m.bossScript;
+    if (!script) return;
+    const dist = Math.hypot(p.x - m.bossPx, p.y - m.bossPy);
+    if (m.bossShield > 0) m.bossShield -= dt;
+    if (m.bossTelegraphTimer > 0) m.bossTelegraphTimer -= dt;
+    // Status effects (same as monsters): stun/freeze halts action; slow reduces pace.
+    if (m.bossStun > 0) m.bossStun -= dt;
+    if (m.bossSlow > 0) m.bossSlow -= dt;
+    if (m.bossFreeze > 0) m.bossFreeze -= dt;
+    if (m.bossStun > 0 || m.bossFreeze > 0) { m.bossX = Math.floor(m.bossPx / 40); m.bossY = Math.floor(m.bossPy / 40); return; }
+    const statusSpd = m.bossSlow > 0 ? 0.5 : 1;
+
+    // Pick active phase by HP fraction (phases listed high->low 'until')
+    const hpFrac = m.bossHp / m.bossMaxHp;
+    let phaseIdx = 0;
+    for (let i = 0; i < script.phases.length; i++) {
+      phaseIdx = i;
+      if (hpFrac > script.phases[i].until) break;
+    }
+    if (phaseIdx !== m.bossPhaseIdx) {
+      m.bossPhaseIdx = phaseIdx;
+      m.bossMoveIdx = 0;
+      if (phaseIdx > 0) { m.bossTelegraphTimer = 0.6; addFloat(m.bossPx, m.bossPy - 40, 'PHASE!', bossColorOf(m)); }
+    }
+    const phase = script.phases[phaseIdx];
+    const moves = phase.moves;
+
+    // Default movement: keep a mid distance from the player (unless a charge/dash move handles it)
+    if (!m.bossLunge) {
+      const desired = 150;
+      const dxn = (p.x - m.bossPx) / Math.max(1, dist);
+      const dyn = (p.y - m.bossPy) / Math.max(1, dist);
+      const sign = dist > desired ? 1 : -0.4;
+      const sp = 70 * (m.bossSpdMult || 1) * statusSpd * sign * dt;
+      const sx = m.bossPx + dxn * sp, sy = m.bossPy + dyn * sp;
+      if (!collidesWall(sx, m.bossPy, true) && !pixelOnHazardTile(sx, m.bossPy)) m.bossPx = sx;
+      if (!collidesWall(m.bossPx, sy, true) && !pixelOnHazardTile(m.bossPx, sy)) m.bossPy = sy;
+    } else {
+      // active lunge: move fast toward stored target
+      const ld = Math.hypot(m.bossLunge.x - m.bossPx, m.bossLunge.y - m.bossPy);
+      const sp = (m.bossLunge.spd || 6) * 30 * dt;
+      if (ld < 8 || m.bossLunge.t <= 0) { m.bossLunge = null; }
+      else {
+        const lx = m.bossPx + (m.bossLunge.x - m.bossPx) / ld * Math.min(sp, ld);
+        const ly = m.bossPy + (m.bossLunge.y - m.bossPy) / ld * Math.min(sp, ld);
+        if (!collidesWall(lx, m.bossPy, true)) m.bossPx = lx;
+        if (!collidesWall(m.bossPx, ly, true)) m.bossPy = ly;
+        m.bossLunge.t -= dt;
+        if (dist < 55 && p.invuln <= 0 && p.sky <= 0) { damagePlayer(m.bossDmg * 0.7 * (m.bossDmgMult || 1), m.bossAff); m.bossLunge = null; }
+      }
+    }
+    m.bossX = Math.floor(m.bossPx / 40); m.bossY = Math.floor(m.bossPy / 40);
+
+    // Contact damage
+    if (dist < 46 && p.invuln <= 0 && p.sky <= 0) damagePlayer(m.bossDmg * 0.35 * (m.bossDmgMult || 1) * dt * 3, m.bossAff);
+
+    // If the player died (maze cleared / zone changed), stop acting this frame.
+    if (!world.current.maze || world.current.maze !== m) return;
+
+    // Move cadence
+    m.bossCooldown -= dt * statusSpd;
+    if (m.bossCooldown <= 0 && !m.bossLunge) {
+      const move = moves[m.bossMoveIdx % moves.length];
+      m.bossMoveIdx++;
+      m.bossTelegraphTimer = 0.35;
+      const baseGap = Math.max(0.7, 1.5 - w.floor * 0.004); // higher floors act faster
+      m.bossCooldown = baseGap;
+      execBossMove(w, c, p, m, move[0], move[1] || {});
+    }
+  }
+
+  function execBossMove(w, c, p, m, type, prm) {
+    const dmgMult = m.bossDmgMult || 1;
+    const baseDmg = m.bossDmg * dmgMult;
+    const col = bossColorOf(m);
+    const aff = m.bossAff;
+    const ang = Math.atan2(p.y - m.bossPy, p.x - m.bossPx);
+    const fam = (typeof affKind === 'function') ? affKind(aff) : 'arcane';
+    switch (type) {
+      case 'bolt':
+        w.projectiles.push({ x: m.bossPx, y: m.bossPy, vx: Math.cos(ang) * (prm.spd || 300), vy: Math.sin(ang) * (prm.spd || 300), life: 2.6, dmg: baseDmg * (prm.dmg || 1), aff, fromPlayer: false, color: col, big: true, spell: fam, trail: true });
+        break;
+      case 'spread': {
+        const n = prm.n || 5, arc = prm.arc || 0.9;
+        for (let i = 0; i < n; i++) { const a = ang - arc / 2 + arc * i / Math.max(1, n - 1); w.projectiles.push({ x: m.bossPx, y: m.bossPy, vx: Math.cos(a) * 280, vy: Math.sin(a) * 280, life: 2.4, dmg: baseDmg * 0.6, aff, fromPlayer: false, color: col, spell: fam }); }
+        break; }
+      case 'ring': {
+        const n = prm.n || 10;
+        for (let i = 0; i < n; i++) { const a = i / n * Math.PI * 2; w.projectiles.push({ x: m.bossPx, y: m.bossPy, vx: Math.cos(a) * 240, vy: Math.sin(a) * 240, life: 2.4, dmg: baseDmg * 0.55, aff, fromPlayer: false, color: col, spell: fam }); }
+        break; }
+      case 'volley':
+        for (let i = 0; i < (prm.n || 5); i++) setTimeout(() => { try { if (w.maze && !w.maze.boss.defeated) { const a2 = Math.atan2(p.y - m.bossPy, p.x - m.bossPx); w.projectiles.push({ x: m.bossPx, y: m.bossPy, vx: Math.cos(a2) * 360, vy: Math.sin(a2) * 360, life: 2.2, dmg: baseDmg * 0.5, aff, fromPlayer: false, color: col, spell: fam }); } } catch (e) {} }, i * 110);
+        break;
+      case 'beam':
+        bossBeam(m, p, ang, baseDmg * 1.1, aff, col, prm.width || 28);
+        break;
+      case 'nova':
+        w.effects.push({ x: m.bossPx, y: m.bossPy, type: 'nova', life: 0.6, delay: prm.delay ?? 0.25, dmg: baseDmg, aff, radius: prm.r || 130, fromPlayer: false, color: col, fam });
+        break;
+      case 'waves':
+        for (let i = 0; i < (prm.n || 3); i++) w.effects.push({ x: m.bossPx, y: m.bossPy, type: 'nova', life: 0.55, delay: 0.2 + i * 0.42, dmg: baseDmg * 0.7, aff, radius: 90 + i * 55, fromPlayer: false, color: col, fam });
+        break;
+      case 'slam': {
+        const tx = p.x, ty = p.y;
+        w.effects.push({ x: tx, y: ty, type: 'slam', life: 0.7, delay: prm.delay || 0.45, dmg: baseDmg * 1.2, aff, radius: prm.r || 100, fromPlayer: false, color: col, fam });
+        break; }
+      case 'cone':
+        w.effects.push({ x: m.bossPx, y: m.bossPy, type: 'cone', life: 0.32, ang, arc: (prm.arc ? prm.arc * 57 : 70), range: prm.range || 170, color: col, fam });
+        bossConeDamage(m, p, ang, prm.arc || 1.1, prm.range || 170, baseDmg * 0.9, aff);
+        break;
+      case 'chain':
+        bossChain(m, p, baseDmg * 0.9, aff, col, prm.hops || 4);
+        break;
+      case 'field':
+        w.effects.push({ x: p.x, y: p.y, type: 'field', life: prm.life || 3.0, dmg: baseDmg, aff, radius: prm.r || 90, fromPlayer: false, color: col, fam, tickAcc: 0 });
+        break;
+      case 'dash':
+        m.bossLunge = { x: p.x, y: p.y, spd: 7, t: 0.8 };
+        break;
+      case 'charge':
+        m.bossLunge = { x: p.x + Math.cos(ang) * 220, y: p.y + Math.sin(ang) * 220, spd: prm.spd || 6, t: 1.0 };
+        break;
+      case 'summon': {
+        const types = prm.types || ['slime']; const count = prm.count || 2;
+        for (let i = 0; i < count; i++) { const sx = m.bossX + Math.round(rand() * 4 - 2), sy = m.bossY + Math.round(rand() * 4 - 2); if (sx > 0 && sy > 0 && sx < m.W - 1 && sy < m.H - 1 && m.grid[sy][sx] === 0) m.monsters.push({ x: sx, y: sy, type: pick(types), id: Math.random().toString(36).slice(2) }); }
+        break; }
+      case 'heal': {
+        const amt = (prm.amt || 50) * (1 + w.floor * 0.05);
+        m.bossHp = Math.min(m.bossMaxHp, m.bossHp + amt); addFloat(m.bossPx, m.bossPy - 35, '+' + Math.round(amt), '#69f0ae');
+        break; }
+      case 'shield':
+        m.bossShield = prm.dur || 2.5; setMsg(`${m.bossName} guards!`);
+        break;
+      case 'teleport': {
+        const a = rand() * Math.PI * 2, r = 120 + rand() * 70;
+        const tx = clamp(p.x + Math.cos(a) * r, 60, (m.W - 2) * 40), ty = clamp(p.y + Math.sin(a) * r, 60, (m.H - 2) * 40);
+        if (!collidesWall(tx, ty, true)) { w.effects.push({ x: m.bossPx, y: m.bossPy, type: 'spellburst', life: 0.3, color: col, radius: 30, fam }); m.bossPx = tx; m.bossPy = ty; w.effects.push({ x: tx, y: ty, type: 'spellburst', life: 0.3, color: col, radius: 30, fam }); }
+        break; }
+      case 'blink_strike': {
+        const bx = p.x - Math.cos(p.dir) * 50, by = p.y - Math.sin(p.dir) * 50;
+        if (!collidesWall(bx, by, true)) { m.bossPx = bx; m.bossPy = by; }
+        w.effects.push({ x: m.bossPx, y: m.bossPy, type: 'spellburst', life: 0.3, color: col, radius: 28, fam });
+        if (Math.hypot(p.x - m.bossPx, p.y - m.bossPy) < 70 && p.invuln <= 0 && p.sky <= 0) damagePlayer(baseDmg * 0.9, aff);
+        break; }
+      case 'blind':
+        w.effects.push({ x: m.bossPx, y: m.bossPy, type: 'aoe', life: 0.6, color: '#111', radius: prm.r || 200 });
+        if (Math.hypot(p.x - m.bossPx, p.y - m.bossPy) < (prm.r || 200) && p.invuln <= 0) { p.blind = Math.max(p.blind, prm.dur || 3); setMsg('Blinded!'); }
+        break;
+      case 'pillars': {
+        const n = prm.n || 5;
+        for (let i = 0; i < n; i++) { const px2 = m.bossPx + (rand() - 0.5) * 360, py2 = m.bossPy + (rand() - 0.5) * 360; w.effects.push({ x: px2, y: py2, type: 'slam', life: 0.8, delay: 0.4 + rand() * 0.3, dmg: baseDmg * 0.8, aff, radius: 55, fromPlayer: false, color: col, fam }); }
+        break; }
+      case 'weapon': {
+        const style = prm.style || 'slash';
+        w.effects.push({ x: m.bossPx, y: m.bossPy, type: 'slash', swing: style, ang, range: 90, arc: 140, life: 0.25, color: col });
+        if (Math.hypot(p.x - m.bossPx, p.y - m.bossPy) < 100 && p.invuln <= 0 && p.sky <= 0) damagePlayer(baseDmg * 1.0, aff);
+        break; }
+      case 'quake':
+        w.effects.push({ x: m.bossPx, y: m.bossPy, type: 'nova', life: 0.5, delay: 0.1, dmg: baseDmg * 0.8, aff, radius: prm.r || 130, fromPlayer: false, color: col, fam });
+        if (Math.hypot(p.x - m.bossPx, p.y - m.bossPy) < (prm.r || 130) && p.invuln <= 0) { p.stun = Math.max(p.stun, 0.4); }
+        break;
+      case 'mirror': {
+        // Copy the player's most recently used ability entry, if any
+        const last = p.lastAbilityUsed;
+        if (last && last.aff) {
+          const listm = SUB_ABILITIES[last.aff] ? SUB_ABILITIES[last.aff] : (ABILITIES[last.aff] || []);
+          const ab = listm.find(a => a.n === last.name) || listm[0];
+          if (ab) { mirrorCastFromBoss(w, m, p, ab, last.aff, baseDmg); break; }
+        }
+        // fallback: a spread
+        for (let i = 0; i < 5; i++) { const a = ang - 0.4 + 0.2 * i; w.projectiles.push({ x: m.bossPx, y: m.bossPy, vx: Math.cos(a) * 300, vy: Math.sin(a) * 300, life: 2.2, dmg: baseDmg * 0.6, aff, fromPlayer: false, color: col, spell: fam }); }
+        break; }
+      case 'orbit_strafe':
+        m.bossLunge = { x: p.x + Math.cos(ang + 1.3) * 160, y: p.y + Math.sin(ang + 1.3) * 160, spd: 6, t: 0.7 };
+        for (let i = 0; i < 5; i++) { const a = ang - 0.4 + 0.2 * i; w.projectiles.push({ x: m.bossPx, y: m.bossPy, vx: Math.cos(a) * 260, vy: Math.sin(a) * 260, life: 2.2, dmg: baseDmg * 0.5, aff, fromPlayer: false, color: col, spell: fam }); }
+        break;
+      case 'pull_grav': {
+        // Drag the player toward the boss
+        const pd = Math.hypot(p.x - m.bossPx, p.y - m.bossPy);
+        if (pd > 30) { const nx = p.x + (m.bossPx - p.x) / pd * 70, ny = p.y + (m.bossPy - p.y) / pd * 70; if (!collidesWall(nx, p.y, false)) p.x = nx; if (!collidesWall(p.x, ny, false)) p.y = ny; }
+        w.effects.push({ x: m.bossPx, y: m.bossPy, type: 'nova', life: 0.5, delay: 0, dmg: 0, aff, radius: 200, fromPlayer: false, color: col, fam });
+        break; }
+      case 'blizzard_call':
+        for (let i = 0; i < 6; i++) { const px2 = m.bossPx + (rand() - 0.5) * 420, py2 = m.bossPy + (rand() - 0.5) * 420; w.effects.push({ x: px2, y: py2, type: 'field', life: 2.0, dmg: baseDmg * 0.5, aff: 'Ice', radius: 60, fromPlayer: false, color: '#80deea', fam: 'water', tickAcc: 0 }); }
+        if (Math.hypot(p.x - m.bossPx, p.y - m.bossPy) < 300) p.slow = Math.max(p.slow, 2);
+        break;
+      case 'confuse_pulse':
+        if (Math.hypot(p.x - m.bossPx, p.y - m.bossPy) < 220) { p.confused = Math.max(p.confused || 0, 2.5); setMsg('Controls scrambled!'); }
+        w.effects.push({ x: m.bossPx, y: m.bossPy, type: 'aoe', life: 0.5, color: '#ba68c8', radius: 220 });
+        break;
+      case 'enrage':
+        if (!m.bossEnraged) { m.bossEnraged = true; m.bossDmgMult = (m.bossDmgMult || 1) * (prm.dmgMult || 1.3); m.bossSpdMult = (m.bossSpdMult || 1) * (prm.spdMult || 1.2); setMsg(`${m.bossName} ENRAGES!`); addFloat(m.bossPx, m.bossPy - 45, 'ENRAGE', '#ff1744'); }
+        break;
+      default:
+        fireBossProjectile(m, p, dmgMult);
+    }
+  }
+
+  function bossBeam(m, p, ang, dmg, aff, col, width) {
+    const w = world.current; const maxR = 520; let endR = maxR;
+    for (let r = 20; r <= maxR; r += 20) { if (collidesWall(m.bossPx + Math.cos(ang) * r, m.bossPy + Math.sin(ang) * r, true)) { endR = r; break; } }
+    const pdAng = Math.atan2(p.y - m.bossPy, p.x - m.bossPx);
+    let da = Math.abs(pdAng - ang); if (da > Math.PI) da = 2 * Math.PI - da;
+    const pdist = Math.hypot(p.x - m.bossPx, p.y - m.bossPy);
+    if (pdist < endR + 20 && da < (width / 200 + 0.12) && p.invuln <= 0 && p.sky <= 0) damagePlayer(dmg, aff);
+    w.effects.push({ x: m.bossPx, y: m.bossPy, type: 'beam', life: 0.28, ang, len: endR, color: col, fam: 'light' });
+  }
+  function bossConeDamage(m, p, ang, arc, range, dmg, aff) {
+    const pdist = Math.hypot(p.x - m.bossPx, p.y - m.bossPy);
+    if (pdist > range) return;
+    const a = Math.atan2(p.y - m.bossPy, p.x - m.bossPx); let da = Math.abs(a - ang); if (da > Math.PI) da = 2 * Math.PI - da;
+    if (da < arc / 2 && p.invuln <= 0 && p.sky <= 0) damagePlayer(dmg, aff);
+  }
+  function bossChain(m, p, dmg, aff, col, hops) {
+    const w = world.current;
+    const segs = [[m.bossPx, m.bossPy, p.x, p.y]];
+    if (Math.hypot(p.x - m.bossPx, p.y - m.bossPy) < 420 && p.invuln <= 0 && p.sky <= 0) damagePlayer(dmg, aff);
+    w.effects.push({ x: m.bossPx, y: m.bossPy, type: 'chain', life: 0.3, color: col, segs });
+  }
+  function mirrorCastFromBoss(w, m, p, ab, aff, baseDmg) {
+    const col = bossColorOf(m); const fam = affKind(aff);
+    const ang = Math.atan2(p.y - m.bossPy, p.x - m.bossPx);
+    // Reuse a simplified version of the player's ability types, aimed at the player
+    if (['projectile', 'homing_orb', 'pierce_line'].includes(ab.k)) {
+      w.projectiles.push({ x: m.bossPx, y: m.bossPy, vx: Math.cos(ang) * 360, vy: Math.sin(ang) * 360, life: 2.2, dmg: baseDmg, aff, fromPlayer: false, color: col, big: true, spell: fam, trail: true });
+    } else if (ab.k === 'beam') { bossBeam(m, p, ang, baseDmg * 1.1, aff, col, 30); }
+    else if (['nova', 'aoe', 'ultimate'].includes(ab.k)) { w.effects.push({ x: m.bossPx, y: m.bossPy, type: 'nova', life: 0.6, delay: 0.2, dmg: baseDmg, aff, radius: 150, fromPlayer: false, color: col, fam }); }
+    else if (ab.k === 'cone') { w.effects.push({ x: m.bossPx, y: m.bossPy, type: 'cone', life: 0.3, ang, arc: 70, range: 170, color: col, fam }); bossConeDamage(m, p, ang, 1.1, 170, baseDmg, aff); }
+    else { for (let i = 0; i < 6; i++) { const a = i / 6 * Math.PI * 2; w.projectiles.push({ x: m.bossPx, y: m.bossPy, vx: Math.cos(a) * 250, vy: Math.sin(a) * 250, life: 2.2, dmg: baseDmg * 0.6, aff, fromPlayer: false, color: col, spell: fam }); } }
+    setMsg(`${m.bossName} mirrors your ${ab.n}!`);
+  }
+
   function collidesWall(x, y, forMonster) {
     const w = world.current;
     if (w.maze) {
@@ -779,7 +1112,7 @@ function KrezcentQuest() {
     if (rand() < 0.012) {
       const weaponKey = rollDungeonWeapon(world.current.floor);
       if (weaponKey && !c.ownedWeapons.includes(weaponKey)) {
-        c.ownedWeapons.push(weaponKey);
+        c.ownedWeapons.push(weaponKey); c.weaponLevels = c.weaponLevels || {}; c.weaponLevels[weaponKey] = c.weaponLevels[weaponKey] || 1;
         setMsg(`New weapon acquired: ${WEAPONS[weaponKey].n}! Check the Blacksmith.`);
       }
     }
@@ -803,7 +1136,7 @@ function KrezcentQuest() {
     if (rand() < dropChance) {
       const weaponKey = rollDungeonWeapon(world.current.floor);
       if (weaponKey && !c.ownedWeapons.includes(weaponKey)) {
-        c.ownedWeapons.push(weaponKey);
+        c.ownedWeapons.push(weaponKey); c.weaponLevels = c.weaponLevels || {}; c.weaponLevels[weaponKey] = c.weaponLevels[weaponKey] || 1;
         setMsg(`Boss dropped a weapon: ${WEAPONS[weaponKey].n}!`);
       }
     }
@@ -898,6 +1231,21 @@ function KrezcentQuest() {
   function monstersInRadius(cx, cy, r) {
     const w = world.current; if (!w.maze) return [];
     return w.maze.monsters.filter(m => m.hp > 0 && Math.hypot(m.x * 40 + 20 - cx, m.y * 40 + 20 - cy) < r);
+  }
+  // True if the (live) boss is within radius r of (cx,cy).
+  function bossInRadius(cx, cy, r) {
+    const w = world.current; const m = w.maze;
+    if (!m || !m.boss || m.boss.defeated || m.bossHp == null) return false;
+    return Math.hypot(m.bossPx - cx, m.bossPy - cy) < r + 20;
+  }
+  // Apply a status to the boss the same way it would apply to a monster.
+  // field names: 'stun' | 'slow' | 'freeze'
+  function applyBossStatus(kind, dur) {
+    const w = world.current; const m = w.maze;
+    if (!m || !m.boss || m.boss.defeated || m.bossHp == null) return;
+    if (kind === 'stun') m.bossStun = Math.max(m.bossStun || 0, dur);
+    else if (kind === 'slow') m.bossSlow = Math.max(m.bossSlow || 0, dur);
+    else if (kind === 'freeze') { m.bossFreeze = Math.max(m.bossFreeze || 0, dur); m.bossStun = Math.max(m.bossStun || 0, dur); }
   }
   function explodeProjectile(pr) {
     const w = world.current;
@@ -1014,7 +1362,8 @@ function KrezcentQuest() {
     p.dir = ang;
     const mech = wpn.mech;
 
-    let dmg = wpn.dmg * (1 + (c.level - 1) * 0.05);
+    const wlv = (c.weaponLevels && c.weaponLevels[c.weapon]) || 1;
+    let dmg = weaponDamageAt(c.weapon, wlv);
     if (p.buffs.boost) dmg *= 1.2;
     if (p.buffs.rage) dmg *= 1.3;
     if (p.buffs.apex) dmg *= 1.8;
@@ -1184,36 +1533,36 @@ function KrezcentQuest() {
       // F-grade
       case 'twitch': { const a = rand() * Math.PI * 2; p.x += Math.cos(a) * 24; p.y += Math.sin(a) * 24; if (collidesWall(p.x, p.y, false)) { p.x -= Math.cos(a) * 24; p.y -= Math.sin(a) * 24; } p.invuln = 0.15; break; }
       case 'flick': dealAtAim(6, null); break;
-      case 'whistle': { const m = findNearestMonster(); if (m) m.stun = Math.max(m.stun || 0, 1); break; }
+      case 'whistle': { const m = findNearestMonster(); if (m) m.stun = Math.max(m.stun || 0, 1); else if (bossInRadius(p.x, p.y, 300)) applyBossStatus('stun', 1); break; }
       case 'stretch': p.buffs.energyRegen = 2; break;
-      case 'pebble': { dealAtAim(10, null); const m = findNearestMonster(); if (m) m.stun = Math.max(m.stun || 0, 0.4); break; }
+      case 'pebble': { dealAtAim(10, null); const m = findNearestMonster(); if (m) m.stun = Math.max(m.stun || 0, 0.4); else if (bossInRadius(p.x, p.y, 300)) applyBossStatus('stun', 0.4); break; }
       case 'hop': p.x += Math.cos(p.dir) * 60; p.y += Math.sin(p.dir) * 60; if (collidesWall(p.x, p.y, false)) { p.x -= Math.cos(p.dir) * 60; p.y -= Math.sin(p.dir) * 60; } p.invuln = 0.3; break;
       // E-grade
       case 'sidestep': { const a = p.dir + Math.PI / 2; p.x += Math.cos(a) * 70; p.y += Math.sin(a) * 70; if (collidesWall(p.x, p.y, false)) { p.x -= Math.cos(a) * 70; p.y -= Math.sin(a) * 70; } p.invuln = 0.5; break; }
       case 'vault': p.x += Math.cos(p.dir) * 150; p.y += Math.sin(p.dir) * 150; if (collidesWall(p.x, p.y, false)) { p.x -= Math.cos(p.dir) * 150; p.y -= Math.sin(p.dir) * 150; } p.invuln = 0.4; break;
       case 'jab': dealAtAim(18, null); break;
       case 'smokelet': blindNearest(1); break;
-      case 'dartstep': { p.x += Math.cos(p.dir) * 120; p.y += Math.sin(p.dir) * 120; if (collidesWall(p.x, p.y, false)) { p.x -= Math.cos(p.dir) * 120; p.y -= Math.sin(p.dir) * 120; } p.invuln = 0.3; const m = findNearestMonster(); if (m) damageMonster(m, 12, null); break; }
+      case 'dartstep': { p.x += Math.cos(p.dir) * 120; p.y += Math.sin(p.dir) * 120; if (collidesWall(p.x, p.y, false)) { p.x -= Math.cos(p.dir) * 120; p.y -= Math.sin(p.dir) * 120; } p.invuln = 0.3; const m = findNearestMonster(); if (m) damageMonster(m, 12, null); else if (bossInRadius(p.x, p.y, 80)) damageBoss(12, null); break; }
       // D-grade
-      case 'snare': { const m = findNearestMonster(); if (m) { m.stun = Math.max(m.stun || 0, 2); m.freeze = Math.max(m.freeze || 0, 2); } break; }
+      case 'snare': { const m = findNearestMonster(); if (m) { m.stun = Math.max(m.stun || 0, 2); m.freeze = Math.max(m.freeze || 0, 2); } else if (bossInRadius(p.x, p.y, 300)) applyBossStatus('freeze', 2); break; }
       case 'dazzle': for (const m of monstersInRadius(p.x, p.y, 160)) m.aiCooldown = 1.5; break;
       case 'quickstep': p.buffs.quickstep = 4; break;
       case 'parry': p.buffs.reflect = 5; p.shield = (p.shield || 0) + 60; break;
-      case 'bashlet': { const m = findNearestMonster(); if (m) { damageMonster(m, 20, null); pushMonster(m, p.x, p.y, 70); } break; }
+      case 'bashlet': { const m = findNearestMonster(); if (m) { damageMonster(m, 20, null); pushMonster(m, p.x, p.y, 70); } else if (bossInRadius(p.x, p.y, 80)) damageBoss(20, null); break; }
       case 'ironskin': p.buffs.ironskin = 4; break;
       // C-grade
       case 'regen': p.buffs.regen = 5; break;
       case 'cleanse': c.statusEffects = []; p.blind = 0; p.slow = 0; break;
       case 'focus': p.buffs.focus = 5; break;
-      case 'warcry': for (const m of monstersInRadius(p.x, p.y, 170)) { m.stun = Math.max(m.stun || 0, 2); } break;
-      case 'lull': for (const m of monstersInRadius(p.x, p.y, 170)) m.slow = Math.max(m.slow || 0, 4); break;
+      case 'warcry': for (const m of monstersInRadius(p.x, p.y, 170)) { m.stun = Math.max(m.stun || 0, 2); } if (bossInRadius(p.x, p.y, 170)) applyBossStatus('stun', 2); break;
+      case 'lull': for (const m of monstersInRadius(p.x, p.y, 170)) m.slow = Math.max(m.slow || 0, 4); if (bossInRadius(p.x, p.y, 170)) applyBossStatus('slow', 4); break;
       case 'footwork': p.buffs.footwork = 6; p.buffs.quickstep = 6; break;
       // B-grade
       case 'frenzy': p.buffs.frenzy = 5; break;
       case 'blink': p.x += Math.cos(p.dir) * 250; p.y += Math.sin(p.dir) * 250; if (collidesWall(p.x, p.y, false)) { p.x -= Math.cos(p.dir) * 250; p.y -= Math.sin(p.dir) * 250; } p.invuln = 0.3; break;
       case 'fortify': p.shield = (p.shield || 0) + 200; break;
       case 'siphon': drainNearest(0.12); break;
-      case 'quake': for (const m of monstersInRadius(p.x, p.y, 160)) m.stun = Math.max(m.stun || 0, 1.5); w.effects.push({ x: p.x, y: p.y, type: 'aoe', life: 0.4, color: '#8d6e63', radius: 160 }); break;
+      case 'quake': for (const m of monstersInRadius(p.x, p.y, 160)) m.stun = Math.max(m.stun || 0, 1.5); if (bossInRadius(p.x, p.y, 160)) applyBossStatus('stun', 1.5); w.effects.push({ x: p.x, y: p.y, type: 'aoe', life: 0.4, color: '#8d6e63', radius: 160 }); break;
       case 'mirror': p.buffs.mirror = 3; break;
       // A-grade
       case 'overcharge': p.buffs.overcharge = 4; break;
@@ -1224,7 +1573,7 @@ function KrezcentQuest() {
       case 'rewind': { const snap = p.rewindSnap; if (snap) { c.hp = snap.hp; c.mana = snap.mana; c.energy = snap.energy; setMsg('Rewound to 4s ago'); } else { c.hp = clamp(c.hp + c.maxHp * 0.3, 0, c.maxHp); } break; }
       case 'immortal': p.buffs.immortal = 5; break;
       case 'annihilate': w.effects.push({ x: p.x + Math.cos(p.dir) * 120, y: p.y + Math.sin(p.dir) * 120, type: 'aoe', life: 0.6, delay: 0.05, dmg: 600, aff: null, radius: 130, fromPlayer: true, color: '#ff1744' }); break;
-      case 'dominion': for (const m of monstersInRadius(p.x, p.y, 400)) { m.stun = Math.max(m.stun || 0, 5); m.slow = Math.max(m.slow || 0, 5); } break;
+      case 'dominion': for (const m of monstersInRadius(p.x, p.y, 400)) { m.stun = Math.max(m.stun || 0, 5); m.slow = Math.max(m.slow || 0, 5); } if (bossInRadius(p.x, p.y, 400)) { applyBossStatus('stun', 5); applyBossStatus('slow', 5); } break;
       case 'ascend': c.hp = c.maxHp; c.mana = c.maxMana; p.buffs.apex = 4; p.invuln = 4; break;
     }
   }
@@ -1245,19 +1594,34 @@ function KrezcentQuest() {
     }
     return best;
   }
-  function stunNearest(d) { const m = findNearestMonster(); if (m) m.stun = d; }
-  function blindNearest(d) { const m = findNearestMonster(); if (m) m.aiCooldown = d; }
-  function slowAll(a, d) { const w = world.current; if (!w.maze) return; for (const m of w.maze.monsters) if (m.hp > 0) m.slow = d; }
-  function stunAll(d) { const w = world.current; if (!w.maze) return; for (const m of w.maze.monsters) if (m.hp > 0) m.stun = d; }
+  function stunNearest(d) { const m = findNearestMonster(); if (m) m.stun = d; if (bossInRadius(world.current.player.x, world.current.player.y, 300)) applyBossStatus('stun', d); }
+  function blindNearest(d) { const m = findNearestMonster(); if (m) m.aiCooldown = d; const w = world.current; if (bossInRadius(w.player.x, w.player.y, 300)) w.maze.bossTelegraphTimer = Math.max(w.maze.bossTelegraphTimer || 0, 0); }
+  function slowAll(a, d) { const w = world.current; if (!w.maze) return; for (const m of w.maze.monsters) if (m.hp > 0) m.slow = d; applyBossStatus('slow', d); }
+  function stunAll(d) { const w = world.current; if (!w.maze) return; for (const m of w.maze.monsters) if (m.hp > 0) m.stun = d; applyBossStatus('stun', d); }
   function drainNearest(a) {
-    const m = findNearestMonster(); if (!m) return;
-    const drain = m.maxHp * a; m.hp -= drain;
-    const c = charRef.current; c.hp = clamp(c.hp + drain, 0, c.maxHp);
-    addFloat(m.x * 40 + 20, m.y * 40 + 20, '-' + Math.floor(drain), '#ff5252');
-    if (m.hp <= 0) onMonsterDeath(m);
+    const m = findNearestMonster();
+    const w = world.current; const c = charRef.current;
+    if (m) {
+      const drain = m.maxHp * a; m.hp -= drain;
+      c.hp = clamp(c.hp + drain, 0, c.maxHp);
+      addFloat(m.x * 40 + 20, m.y * 40 + 20, '-' + Math.floor(drain), '#ff5252');
+      if (m.hp <= 0) onMonsterDeath(m);
+    } else if (bossInRadius(w.player.x, w.player.y, 300)) {
+      // Lifesteal off the boss: drain a capped flat amount so it can't be cheesed.
+      const drain = Math.min(w.maze.bossMaxHp * a * 0.25, w.maze.bossMaxHp * 0.05);
+      damageBoss(drain, null); c.hp = clamp(c.hp + drain, 0, c.maxHp);
+    }
   }
-  function killNearest() { const m = findNearestMonster(); if (!m) return; m.hp = 0; onMonsterDeath(m); }
-  function controlNearest(d) { const m = findNearestMonster(); if (m) m.stun = d; }
+  function killNearest() {
+    const m = findNearestMonster(); const w = world.current;
+    if (m) { m.hp = 0; onMonsterDeath(m); }
+    else if (bossInRadius(w.player.x, w.player.y, 300)) {
+      // Slash vs boss: a huge execute strike (25% max HP) rather than instant kill.
+      damageBoss(w.maze.bossMaxHp * 0.25, null);
+      addFloat(w.maze.bossPx, w.maze.bossPy - 40, 'EXECUTE', '#ff1744');
+    }
+  }
+  function controlNearest(d) { const m = findNearestMonster(); if (m) m.stun = d; if (bossInRadius(world.current.player.x, world.current.player.y, 300)) applyBossStatus('stun', d); }
 
   function useAffinitySlot(letter) {
     const slot = { q: 0, e: 1, r: 2, f: 3, g: 4 }[letter];
@@ -1278,9 +1642,12 @@ function KrezcentQuest() {
     const cdKey = 'abil_' + entry.aff + '_' + entry.name;
     if ((p.cooldowns[cdKey] || 0) > 0) { setMsg(`${abil.n} on cooldown (${p.cooldowns[cdKey].toFixed(1)}s)`); return; }
     if (c.mana < abil.m) { setMsg('Not enough mana'); return; }
-    c.mana -= abil.m;
+    const manaCost = (p.silenced > 0) ? Math.ceil(abil.m * 1.6) : abil.m;
+    if (c.mana < manaCost) { setMsg('Silenced — not enough mana'); return; }
+    c.mana -= manaCost;
     AudioMgr.play('magic');
     p.cooldowns[cdKey] = abil.cd || 3;
+    p.lastAbilityUsed = { name: entry.name, aff: entry.aff };
     let mult = 1;
     const wpn = WEAPONS[c.weapon];
     if (wpn?.manaBoost) mult += wpn.manaBoost;
@@ -1477,20 +1844,86 @@ function KrezcentQuest() {
       }
     }
   }
+  // Scatter collectable loot orbs across a floor. Walking over one grants it.
+  // Items are common; weapons are rare; quality scales with floor (floorLootGrade).
+  function spawnFloorLoot(maze, floor) {
+    maze.loot = [];
+    if (!maze.grid) return;
+    // Gather walkable open tiles away from the spawn.
+    const open = [];
+    for (let y = 1; y < maze.H - 1; y++) {
+      for (let x = 1; x < maze.W - 1; x++) {
+        const t = maze.grid[y][x];
+        if (t === 0 || t === 4 || t === 6 || t === 7) open.push([x, y]);
+      }
+    }
+    if (!open.length) return;
+    // 4-7 loot orbs per floor.
+    const count = 4 + Math.floor(rand() * 4);
+    const used = new Set();
+    for (let i = 0; i < count && open.length; i++) {
+      let pick3, tries = 0;
+      do { pick3 = open[Math.floor(rand() * open.length)]; tries++; } while (used.has(pick3[0] + ',' + pick3[1]) && tries < 10);
+      used.add(pick3[0] + ',' + pick3[1]);
+      // ~82% item, ~12% weapon, ~6% pure coins
+      const r = rand();
+      const kind = r < 0.82 ? 'item' : (r < 0.94 ? 'weapon' : 'coins');
+      maze.loot.push({ x: pick3[0], y: pick3[1], kind, taken: false });
+    }
+  }
+
+  function collectFloorLoot(orb) {
+    orb.taken = true;
+    const c = charRef.current;
+    const floor = world.current.floor;
+    const grade = floorLootGrade(floor);
+    if (orb.kind === 'weapon') {
+      const weaponKey = rollDungeonWeapon(floor);
+      if (weaponKey && !c.ownedWeapons.includes(weaponKey)) {
+        c.ownedWeapons.push(weaponKey); c.weaponLevels = c.weaponLevels || {}; c.weaponLevels[weaponKey] = c.weaponLevels[weaponKey] || 1;
+        setMsg(`Found a weapon: ${WEAPONS[weaponKey].n}!`);
+      } else {
+        const itemKey = rollItemOfGrade(grade);
+        if (itemKey) { addItemToInventory({ key: itemKey, name: ITEMS[itemKey].n, grade }); setMsg(`Found ${grade}-grade ${ITEMS[itemKey].n}`); }
+      }
+    } else if (orb.kind === 'coins') {
+      const coins = Math.floor(15 + rand() * 40 + floor * 4);
+      c.coins += coins; setMsg(`Found 🪙 ${coins}`);
+    } else {
+      const itemKey = rollItemOfGrade(grade);
+      if (itemKey) { addItemToInventory({ key: itemKey, name: ITEMS[itemKey].n, grade }); setMsg(`Found ${grade}-grade ${ITEMS[itemKey].n}`); }
+      else { const coins = Math.floor(10 + floor * 3); c.coins += coins; setMsg(`Found 🪙 ${coins}`); }
+    }
+    AudioMgr.play('chest');
+    setChar({ ...c });
+  }
+
   function openChest(ch) {
     ch.opened = true;
     const c = charRef.current;
-    const grade = floorLootGrade(world.current.floor);
-    const itemKey = rollItemOfGrade(grade);
-    if (itemKey) { addItemToInventory({ key: itemKey, name: ITEMS[itemKey].n, grade }); setMsg(`Chest: ${grade}-grade ${ITEMS[itemKey].n}!`); }
-    const coins = Math.floor(20 + rand() * 50 + world.current.floor * 5);
+    const floor = world.current.floor;
+    const grade = floorLootGrade(floor);
+    const coins = Math.floor(20 + rand() * 50 + floor * 5);
     c.coins += coins;
-    if (rand() < 0.05) {
-      const weaponKey = rollDungeonWeapon(world.current.floor);
+    // Loot roll: items are common, weapons rare, scaling quality with floor.
+    const roll = rand();
+    if (roll < 0.12) {
+      // Weapon find (rarer). Quality rises with floor via rollDungeonWeapon's floor gate.
+      const weaponKey = rollDungeonWeapon(floor);
       if (weaponKey && !c.ownedWeapons.includes(weaponKey)) {
-        c.ownedWeapons.push(weaponKey);
-        setMsg(`Chest contained a weapon: ${WEAPONS[weaponKey].n}!`);
+        c.ownedWeapons.push(weaponKey); c.weaponLevels = c.weaponLevels || {}; c.weaponLevels[weaponKey] = c.weaponLevels[weaponKey] || 1;
+        setMsg(`Chest: a weapon — ${WEAPONS[weaponKey].n}! (+🪙${coins})`);
+      } else {
+        // already owned or none available -> fall back to an item
+        const itemKey = rollItemOfGrade(grade);
+        if (itemKey) { addItemToInventory({ key: itemKey, name: ITEMS[itemKey].n, grade }); setMsg(`Chest: ${grade}-grade ${ITEMS[itemKey].n} (+🪙${coins})`); }
+        else setMsg(`Chest: +🪙${coins}`);
       }
+    } else {
+      // Item find (common).
+      const itemKey = rollItemOfGrade(grade);
+      if (itemKey) { addItemToInventory({ key: itemKey, name: ITEMS[itemKey].n, grade }); setMsg(`Chest: ${grade}-grade ${ITEMS[itemKey].n}! (+🪙${coins})`); }
+      else setMsg(`Chest: +🪙${coins}`);
     }
     AudioMgr.play('chest');
     setChar({ ...c });
@@ -1631,10 +2064,14 @@ function KrezcentQuest() {
     } else if (zone === 'dungeon') {
       w.maze = generateFloor(w.floor);
       w.maze.floor = w.floor;
+      w.maze.floorEffect = floorEffect(w.floor);
+      w.maze.floorName = floorTheme(w.floor).name;
       // Spawn from the floor's own spawn coords
       w.player.x = w.maze.spawn.x; w.player.y = w.maze.spawn.y;
       w.npcs = [];
-      setMsg(`Floor ${w.floor} (${w.maze.type}). ${w.maze.intro || ''}`);
+      w.lavaBurnAcc = 0; w.effectAcc = 0;
+      spawnFloorLoot(w.maze, w.floor);
+      setMsg(`F${w.floor} — ${w.maze.floorName}. ${w.maze.intro || ''}`);
     }
     setHudTick(t => t + 1);
   }
@@ -2116,17 +2553,27 @@ function KrezcentQuest() {
         ctx.beginPath(); ctx.arc(hx, hy - 3, 2, 0, Math.PI * 2); ctx.fill();
       }
     }
-    // Boss room highlight (only if visible)
-    if (!fogged || m.revealed.has(`${m.bossX},${m.bossY}`)) {
-      ctx.strokeStyle = '#ff1744'; ctx.lineWidth = 3;
-      ctx.strokeRect((m.bossX - 1) * 40 - cam.x, (m.bossY - 1) * 40 - cam.y, 120, 120);
-      ctx.lineWidth = 1;
-    }
+    // (Removed boss-room red highlight box per player request.)
     // Chests
     for (const ch of m.chests || []) {
       if (ch.opened) continue;
       if (fogged && !m.revealed.has(`${ch.x},${ch.y}`)) continue;
       drawChest(ctx, ch.x * 40 + 20 - cam.x, ch.y * 40 + 25 - cam.y);
+    }
+    // Collectable loot orbs
+    for (const orb of m.loot || []) {
+      if (orb.taken) continue;
+      if (fogged && !m.revealed.has(`${orb.x},${orb.y}`)) continue;
+      const ox = orb.x * 40 + 20 - cam.x, oy = orb.y * 40 + 20 - cam.y;
+      const pulse = 1 + Math.sin(performance.now() / 220 + orb.x) * 0.18;
+      const col = orb.kind === 'weapon' ? '#ff7043' : (orb.kind === 'coins' ? '#ffd54f' : '#69f0ae');
+      ctx.save();
+      ctx.shadowColor = col; ctx.shadowBlur = 14;
+      ctx.globalAlpha = 0.9; ctx.fillStyle = col;
+      ctx.beginPath(); ctx.arc(ox, oy - 2, 6 * pulse, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 0.35; ctx.beginPath(); ctx.arc(ox, oy - 2, 11 * pulse, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+      ctx.globalAlpha = 1;
     }
     // Monsters
     for (const mon of m.monsters) {
@@ -3332,6 +3779,7 @@ function KrezcentQuest() {
         equippedAttrs: attrs.slice(0, MAX_EQUIPPED_ATTRS).map(a => a.key),
         knownAbilities, equippedAbilityList: [],
         ownedWeapons: [weapon],
+        weaponLevels: { [weapon]: 1 },
         statusEffects: [],
         level, exp: 0, maxHp, hp: maxHp, maxMana, mana: maxMana, maxEnergy, energy: maxEnergy,
         inventory: [], coins: setCoins != null ? setCoins : (100 + bonusCoins),
@@ -3840,7 +4288,7 @@ function KrezcentQuest() {
   function DungeonSelectModal() {
     return (
       <ModalBox title="Choose a Floor" onClose={() => setModal(null)}>
-        <p className="text-sm text-slate-400 mb-3">Unlocked: {char.unlockedFloor}. Floors cycle through 10 unique types.</p>
+        <p className="text-sm text-slate-400 mb-3">Unlocked: {char.unlockedFloor}. 100 unique floors — each with its own theme, hazards, and a boss with a distinct fighting style.</p>
         <div className="grid grid-cols-10 gap-1">
           {Array.from({ length: 100 }).map((_, i) => {
             const f = i + 1;
@@ -3848,6 +4296,7 @@ function KrezcentQuest() {
             const isBoss = f % 10 === 0;
             return (
               <button key={f} disabled={locked}
+                title={locked ? `Floor ${f} (locked)` : `F${f}: ${floorTheme(f).name}`}
                 onClick={() => { world.current.floor = f; char.currentFloor = f; setModal(null); enterZone('dungeon'); }}
                 className={`text-xs py-2 rounded ${locked ? 'bg-slate-800 text-slate-600' : isBoss ? 'bg-yellow-700 hover:bg-yellow-600' : f <= 10 ? 'bg-green-900 hover:bg-green-700' : f <= 30 ? 'bg-blue-900 hover:bg-blue-700' : f <= 60 ? 'bg-purple-900 hover:bg-purple-700' : f <= 90 ? 'bg-red-900 hover:bg-red-700' : 'bg-pink-900 hover:bg-pink-700'}`}>
                 {locked ? '🔒' : isBoss ? '★' + f : f}
@@ -3913,20 +4362,50 @@ function KrezcentQuest() {
       <ModalBox title="Blacksmith — Weapons" onClose={() => setModal(null)}>
         <div className="text-yellow-400 mb-3">🪙 {c.coins} coins · Equipped: <span className="text-yellow-300">{WEAPONS[c.weapon]?.n}</span></div>
         <div className="text-purple-300 font-bold mb-2">Your Collection</div>
+        <div className="text-xs text-slate-400 mb-2">Upgrade weapons up to level {MAX_WEAPON_LEVEL}. Each level multiplies damage; stronger weapons cost far more to level.</div>
         <div className="grid grid-cols-2 gap-2 mb-4">
           {(c.ownedWeapons || []).map(wk => {
             const w = WEAPONS[wk]; if (!w) return null;
             const equipped = c.weapon === wk;
+            const lvl = (c.weaponLevels && c.weaponLevels[wk]) || 1;
+            const curDmg = Math.round(weaponDamageAt(wk, lvl));
+            const maxed = lvl >= MAX_WEAPON_LEVEL;
+            const upCost = maxed ? null : weaponUpgradeCost(wk, lvl);
+            const nextDmg = maxed ? curDmg : Math.round(weaponDamageAt(wk, lvl + 1));
             return (
               <div key={wk} className="bg-slate-900 p-2 rounded">
-                <div className="font-bold">{w.n}</div>
+                <div className="flex justify-between items-baseline">
+                  <span className="font-bold">{w.n}</span>
+                  <span className={`text-xs ${maxed ? 'text-yellow-300' : 'text-slate-400'}`}>Lv {lvl}/{MAX_WEAPON_LEVEL}</span>
+                </div>
                 <div className="text-xs text-slate-400">{w.style}</div>
-                <div className="text-xs mt-1">Dmg {w.dmg} · Spd {w.spd}{w.ranged ? ' · Ranged' : ''}</div>
-                <button onClick={() => { c.weapon = wk; setChar({ ...c }); setMsg(`Equipped ${w.n}`); }}
-                  disabled={equipped}
-                  className={`mt-1 w-full text-xs py-1 rounded ${equipped ? 'bg-slate-700 text-slate-400' : 'bg-green-700 hover:bg-green-600'}`}>
-                  {equipped ? 'Equipped' : 'Equip'}
-                </button>
+                <div className="text-xs mt-1">Dmg <span className="text-orange-300 font-bold">{curDmg}</span> · Spd {w.spd}{w.ranged ? ' · Ranged' : ''}</div>
+                {/* level pips */}
+                <div className="flex gap-0.5 mt-1">
+                  {Array.from({ length: MAX_WEAPON_LEVEL }).map((_, i) => (
+                    <div key={i} className={`h-1.5 flex-1 rounded ${i < lvl ? 'bg-orange-400' : 'bg-slate-700'}`} />
+                  ))}
+                </div>
+                <div className="grid grid-cols-2 gap-1 mt-2">
+                  <button onClick={() => { c.weapon = wk; setChar({ ...c }); setMsg(`Equipped ${w.n}`); }}
+                    disabled={equipped}
+                    className={`text-xs py-1 rounded ${equipped ? 'bg-slate-700 text-slate-400' : 'bg-green-700 hover:bg-green-600'}`}>
+                    {equipped ? 'Equipped' : 'Equip'}
+                  </button>
+                  <button onClick={() => {
+                    if (maxed) { setMsg('Already at max level'); return; }
+                    if (c.coins < upCost) { setMsg(`Need 🪙 ${upCost} to upgrade`); return; }
+                    c.coins -= upCost;
+                    c.weaponLevels = c.weaponLevels || {};
+                    c.weaponLevels[wk] = lvl + 1;
+                    setChar({ ...c });
+                    AudioMgr.play('levelup');
+                    setMsg(`${w.n} upgraded to Lv ${lvl + 1}! (Dmg ${curDmg} → ${nextDmg})`);
+                  }} disabled={maxed}
+                    className={`text-xs py-1 rounded ${maxed ? 'bg-yellow-800 text-yellow-300' : 'bg-orange-700 hover:bg-orange-600'}`}>
+                    {maxed ? 'MAX' : `↑ 🪙${upCost}`}
+                  </button>
+                </div>
               </div>
             );
           })}
@@ -3940,7 +4419,7 @@ function KrezcentQuest() {
               <div key={s.key} className="bg-slate-900 p-2 rounded">
                 <div className="font-bold">{w.n}</div>
                 <div className="text-xs text-slate-400">{w.style}</div>
-                <div className="text-xs mt-1">Dmg {w.dmg} · Spd {w.spd}</div>
+                <div className="text-xs mt-1">Dmg {Math.round(weaponDamageAt(s.key, 1))} <span className="text-slate-500">→ {Math.round(weaponDamageAt(s.key, MAX_WEAPON_LEVEL))} @Lv{MAX_WEAPON_LEVEL}</span> · Spd {w.spd}</div>
                 <div className="flex justify-between items-center mt-2">
                   <span className="text-yellow-400">🪙 {s.price}</span>
                   <button onClick={() => {
@@ -3948,7 +4427,7 @@ function KrezcentQuest() {
                     if (c.coins < s.price) { setMsg('Not enough coins'); return; }
                     c.coins -= s.price;
                     c.ownedWeapons.push(s.key);
-                    setChar({ ...c });
+                    c.weaponLevels = c.weaponLevels || {}; c.weaponLevels[s.key] = c.weaponLevels[s.key] || 1;
                     setMsg(`Bought ${w.n}!`);
                   }} disabled={owned}
                     className={`text-xs py-1 px-2 rounded ${owned ? 'bg-slate-700 text-slate-400' : 'bg-green-700 hover:bg-green-600'}`}>
@@ -4029,7 +4508,7 @@ function KrezcentQuest() {
         if (weaponKey) results.items.push({ kind: 'weapon', key: weaponKey, name: WEAPONS[weaponKey].n });
         for (const r of results.items) {
           if (r.kind === 'item') addItemToInventory({ key: r.key, name: r.name, grade: r.grade });
-          else if (r.kind === 'weapon') { if (!c.ownedWeapons.includes(r.key)) c.ownedWeapons.push(r.key); }
+          else if (r.kind === 'weapon') { if (!c.ownedWeapons.includes(r.key)) c.ownedWeapons.push(r.key); c.weaponLevels = c.weaponLevels || {}; c.weaponLevels[r.key] = c.weaponLevels[r.key] || 1; }
         }
         setChar({ ...c });
         setBoxSpin({ boxKey: key, phase: 'reveal', result: results });

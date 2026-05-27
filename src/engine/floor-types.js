@@ -32,16 +32,10 @@ export const THEMES = {
   void:    { name: 'Void Reaches',  wall: '#311b92', floor: '#1a0d5e', accent: '#4527a0', bg: '#0a0224' },
 };
 
+import { floorTheme as _floorTheme, floorLayout as _floorLayout } from '../data/floors.js';
+
 export function themeForFloor(f) {
-  if (f <= 10) return THEMES.shadow;
-  if (f <= 20) return THEMES.crypt;
-  if (f <= 30) return THEMES.cavern;
-  if (f <= 40) return THEMES.nature;
-  if (f <= 50) return THEMES.azure;
-  if (f <= 60) return THEMES.glacial;
-  if (f <= 75) return THEMES.storm;
-  if (f <= 90) return THEMES.magma;
-  return THEMES.void;
+  return _floorTheme(f);
 }
 
 // ---------- Small helpers ----------
@@ -640,10 +634,8 @@ const NON_BOSS_NAMES = ['maze', 'crypt', 'cave', 'hall', 'arena', 'river', 'magm
 
 export function pickFloorType(floor) {
   if (floor % 10 === 0) return 'boss_arena';
-  const tier = Math.floor((floor - 1) / 10);
-  const slot = (floor - 1) % 10;
-  const idx = (slot + tier * 3) % NON_BOSS_GENS.length;
-  return NON_BOSS_NAMES[idx];
+  const layout = _floorLayout(floor);
+  return NON_BOSS_NAMES.includes(layout) ? layout : 'maze';
 }
 
 export function generateFloorOfType(type, floor) {

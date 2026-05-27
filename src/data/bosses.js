@@ -140,12 +140,10 @@ export const REGULAR_BOSSES = [
   { n: 'Chrono Phantom',  color: '#ffd54f', aff: 'Time',       hpMult: 25, dmgMult: 5.2,  shape: 'chrono_phantom', aiPattern: PATTERNS.TELEPORT, teleportRate: 2.6, desc: 'Bends time. The fight feels longer than it is.' },
 ];
 
+import { floorBoss as _floorBoss } from './floors.js';
+
 export function bossForFloor(floor) {
-  // Every 10th — unique
-  if (floor % 10 === 0 && UNIQUE_BOSSES[floor]) return { ...UNIQUE_BOSSES[floor], unique: true };
-  // Otherwise pick from regulars by tier
-  const tier = Math.min(REGULAR_BOSSES.length - 1, Math.floor((floor - 1) / 5));
-  return { ...REGULAR_BOSSES[tier], unique: false };
+  return _floorBoss(floor);
 }
 
 export const BOSS_AI_PATTERNS = PATTERNS;
