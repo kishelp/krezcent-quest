@@ -23,6 +23,11 @@ export const ITEMS = {
   power_draught:  { g: 'A', n: 'Power Draught',        e: 'boost15s',    price: 300,  shopSells: true,  stack: true, desc: '+20% damage for 15s' },
   swift_tonic:    { g: 'A', n: 'Swift Tonic',          e: 'haste15s',    price: 280,  shopSells: true,  stack: true, desc: '+25% move speed for 15s' },
   iron_tonic:     { g: 'A', n: 'Iron Tonic',           e: 'guard15s',    price: 280,  shopSells: true,  stack: true, desc: '-25% damage taken for 15s' },
+  // Cooldown-reduction charms (Update 9) — reduce attribute & ability cooldowns for a time.
+  eternal_sigil:  { g: 'S', n: 'Eternal Sigil',        e: 'cd50_30',     price: 1400, shopSells: true,  stack: true, desc: '-50% ability & attribute cooldowns for 30s' },
+  chrono_charm:   { g: 'A', n: 'Chrono Charm',         e: 'cd35_25',     price: 420,  shopSells: true,  stack: true, desc: '-35% cooldowns for 25s' },
+  swift_rune:     { g: 'B', n: 'Swift Rune',           e: 'cd25_20',     price: 180,  shopSells: true,  stack: true, desc: '-25% cooldowns for 20s' },
+  haste_bead:     { g: 'C', n: 'Haste Bead',           e: 'cd15_15',     price: 70,   shopSells: true,  stack: true, desc: '-15% cooldowns for 15s' },
   // ---------------- B ----------------
   heal_potion_b:  { g: 'B', n: 'Heal Potion',          e: 'heal20',      price: 120,  shopSells: true,  stack: true, desc: '+20% HP' },
   mana_potion_b:  { g: 'B', n: 'Mana Potion',          e: 'mana20',      price: 110,  shopSells: true,  stack: true, desc: '+20% mana' },

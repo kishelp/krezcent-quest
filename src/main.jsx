@@ -5,11 +5,12 @@ import ReactDOM from 'react-dom/client';
 import { ATTRS, ATTRS_BY_GRADE } from './data/attributes.js';
 import { AFFS, SUB_WEAK, SUB_COLOR, ABILITIES, SUB_ABILITIES } from './data/affinities.js';
 import { WEAPONS, STARTER_WEAPONS, DROPPABLE_WEAPONS, weaponDamageAt, weaponUpgradeCost, weaponMaxOutCost, MAX_WEAPON_LEVEL } from './data/weapons.js';
+import { ARMORS, ARMOR_SHOP, DROPPABLE_ARMORS, armorReductionAt, armorMoveMod, armorUpgradeCost, MAX_ARMOR_LEVEL } from './data/armor.js';
 import { ITEMS, MONSTER_DROP_VALUE, ADMIN_CODES, MAX_STACK } from './data/items.js';
 import { MONSTER_TYPES } from './data/monsters.js';
 import { bossForFloor, BOSS_AI_PATTERNS } from './data/bosses.js';
 import { MYSTERY_BOXES, ATTRIBUTE_TRAINER, WEAPON_SHOP, rollMysteryBoxGrade, rollMysteryBoxWeapon } from './data/shops.js';
-import { ZONES } from './data/zones.js';
+import { ZONES, INTERIORS } from './data/zones.js';
 
 import { AudioMgr } from './engine/audio.js';
 import { StorageMgr } from './engine/storage.js';
@@ -47,6 +48,11 @@ function migrateChar(c) {
   // Weapon upgrade levels (Update 8): every owned weapon defaults to level 1.
   if (!c.weaponLevels) c.weaponLevels = {};
   for (const wk of c.ownedWeapons) { if (!c.weaponLevels[wk]) c.weaponLevels[wk] = 1; }
+  // Armor (Update 9): owned set, per-armor levels, currently-equipped (none by default).
+  if (!c.ownedArmors) c.ownedArmors = [];
+  if (!c.armorLevels) c.armorLevels = {};
+  for (const ak of c.ownedArmors) { if (!c.armorLevels[ak]) c.armorLevels[ak] = 1; }
+  if (c.armor === undefined) c.armor = null;
   if (!c.statusEffects) c.statusEffects = [];
   return c;
 }
@@ -205,6 +211,7 @@ function KrezcentQuest() {
         dx /= len; dy /= len;
         p.dir = Math.atan2(dy, dx);
         let spd = p.speed;
+        if (c.armor) spd *= armorMoveMod(c.armor);
         if (p.buffs.charge) spd *= 1.1;
         if (p.buffs.quickstep) spd *= 1.25;
         if (p.buffs.footwork) spd *= 1.15;
@@ -487,6 +494,7 @@ function KrezcentQuest() {
     }
 
     w.floats = w.floats.map(f => ({ ...f, life: f.life - dt, y: f.y - dt * 30 })).filter(f => f.life > 0);
+    if (w.gateCooldown) { w.gateCooldown -= dt; if (w.gateCooldown <= 0) w.gateCooldown = 0; }
     updateInteractPrompt();
     checkZoneTransitions();
   }
@@ -1015,10 +1023,20 @@ function KrezcentQuest() {
       if (forMonster && tile === 3) return true;
       return false;
     }
+    // Interior rooms: keep the player inside the room bounds.
+    if (INTERIORS[w.zone]) {
+      const intr = INTERIORS[w.zone];
+      if (x < 24 || y < 24 || x > intr.w - 24 || y > intr.h - 14) return true;
+      return false;
+    }
     const z = ZONES[w.zone];
     if (!z) return false;
     for (const wall of z.walls) {
       if (x > wall.x && x < wall.x + wall.w && y > wall.y && y < wall.y + wall.h) return true;
+    }
+    // Hub central fountain is solid.
+    if (w.zone === 'hub' && z.fountain) {
+      if (Math.hypot(x - z.fountain.x, y - z.fountain.y) < z.fountain.r) return true;
     }
     return false;
   }
@@ -1070,6 +1088,11 @@ function KrezcentQuest() {
     let mult = affinityMultiplier(aff, Object.keys(c.affinities));
     const wpn = WEAPONS[c.weapon];
     if (wpn?.defense) dmg *= (1 - wpn.defense);
+    // Equipped armor: percent damage reduction (capped low, so dodging still matters).
+    if (c.armor && ARMORS[c.armor]) {
+      const red = armorReductionAt(c.armor, (c.armorLevels && c.armorLevels[c.armor]) || 1);
+      dmg *= (1 - red);
+    }
     if (p.buffs.ironskin) dmg *= 0.75;
     if (p.buffs.bulwark) dmg *= 0.4;
     const final = Math.floor(dmg * mult);
@@ -1095,6 +1118,22 @@ function KrezcentQuest() {
     let r = rand() * total;
     for (const k of pool) { r -= (WEAPONS[k].dropWeight || 1); if (r <= 0) return k; }
     return pool[pool.length - 1];
+  }
+  function rollDungeonArmor(floor) {
+    const pool = DROPPABLE_ARMORS.filter(k => (ARMORS[k].dropMin || 1) <= floor);
+    if (!pool.length) return null;
+    const total = pool.reduce((s, k) => s + (ARMORS[k].dropWeight || 1), 0);
+    let r = rand() * total;
+    for (const k of pool) { r -= (ARMORS[k].dropWeight || 1); if (r <= 0) return k; }
+    return pool[pool.length - 1];
+  }
+  function grantArmor(c, key) {
+    if (!key) return false;
+    if (!c.ownedArmors) c.ownedArmors = [];
+    if (c.ownedArmors.includes(key)) return false;
+    c.ownedArmors.push(key);
+    c.armorLevels = c.armorLevels || {}; c.armorLevels[key] = c.armorLevels[key] || 1;
+    return true;
   }
   function onMonsterDeath(m) {
     const c = charRef.current;
@@ -1476,6 +1515,14 @@ function KrezcentQuest() {
 
     w.effects.push({ x: p.x, y: p.y, type: 'slash', swing: wpn.swing || 'slash', ang, range: wpn.range, arc: isWhirl ? 360 : wpn.arc, life: 0.18, color: swingColor(wpn) });
   }
+  // Cooldown multiplier from active haste buffs (cooldown-reduction items).
+  // Returns a fraction <= 1 to scale newly-set cooldowns. Capped at 60% off.
+  function cdMultiplier(p) {
+    let mult = 1;
+    if (p.buffs && p.buffs.cdHaste) mult *= (1 - (p.cdHasteAmt || 0.25));
+    return Math.max(0.4, mult);
+  }
+
   function useAttribute(idx) {
     const c = charRef.current; if (!c) return;
     const equipped = c.equippedAttrs || [];
@@ -1492,7 +1539,7 @@ function KrezcentQuest() {
     if (cost === 999) c.energy = 0; else c.energy -= cost;
     AudioMgr.play('magic');
     applyAttrEffect(key);
-    p.cooldowns[cdKey] = attr.cd || 3;
+    p.cooldowns[cdKey] = (attr.cd || 3) * cdMultiplier(p);
     setChar({ ...c });
   }
   function applyAttrEffect(key) {
@@ -1646,7 +1693,7 @@ function KrezcentQuest() {
     if (c.mana < manaCost) { setMsg('Silenced — not enough mana'); return; }
     c.mana -= manaCost;
     AudioMgr.play('magic');
-    p.cooldowns[cdKey] = abil.cd || 3;
+    p.cooldowns[cdKey] = (abil.cd || 3) * cdMultiplier(p);
     p.lastAbilityUsed = { name: entry.name, aff: entry.aff };
     let mult = 1;
     const wpn = WEAPONS[c.weapon];
@@ -1833,6 +1880,15 @@ function KrezcentQuest() {
 
   function tryInteract() {
     const w = world.current; const p = w.player;
+    // Interior focus (altar/anvil/desk/etc.) opens the destination's menu.
+    if (INTERIORS[w.zone]) {
+      const f = INTERIORS[w.zone].focus;
+      if (f && Math.hypot(f.x - p.x, f.y - p.y) < 70) {
+        if (f.action === 'settings') setModal('settings');
+        else setModal(f.action);
+        return;
+      }
+    }
     for (const n of w.npcs) {
       if (Math.hypot(n.x - p.x, n.y - p.y) < 70) { if (n.action) n.action(); else if (n.text) setMsg(n.text); return; }
     }
@@ -1867,7 +1923,8 @@ function KrezcentQuest() {
       used.add(pick3[0] + ',' + pick3[1]);
       // ~82% item, ~12% weapon, ~6% pure coins
       const r = rand();
-      const kind = r < 0.82 ? 'item' : (r < 0.94 ? 'weapon' : 'coins');
+      // ~80% item, ~9% weapon, ~3% armor (rare), ~8% coins
+      const kind = r < 0.80 ? 'item' : (r < 0.89 ? 'weapon' : (r < 0.92 ? 'armor' : 'coins'));
       maze.loot.push({ x: pick3[0], y: pick3[1], kind, taken: false });
     }
   }
@@ -1882,6 +1939,14 @@ function KrezcentQuest() {
       if (weaponKey && !c.ownedWeapons.includes(weaponKey)) {
         c.ownedWeapons.push(weaponKey); c.weaponLevels = c.weaponLevels || {}; c.weaponLevels[weaponKey] = c.weaponLevels[weaponKey] || 1;
         setMsg(`Found a weapon: ${WEAPONS[weaponKey].n}!`);
+      } else {
+        const itemKey = rollItemOfGrade(grade);
+        if (itemKey) { addItemToInventory({ key: itemKey, name: ITEMS[itemKey].n, grade }); setMsg(`Found ${grade}-grade ${ITEMS[itemKey].n}`); }
+      }
+    } else if (orb.kind === 'armor') {
+      const armorKey = rollDungeonArmor(floor);
+      if (armorKey && grantArmor(c, armorKey)) {
+        setMsg(`Found armor: ${ARMORS[armorKey].n}!`);
       } else {
         const itemKey = rollItemOfGrade(grade);
         if (itemKey) { addItemToInventory({ key: itemKey, name: ITEMS[itemKey].n, grade }); setMsg(`Found ${grade}-grade ${ITEMS[itemKey].n}`); }
@@ -1905,9 +1970,19 @@ function KrezcentQuest() {
     const grade = floorLootGrade(floor);
     const coins = Math.floor(20 + rand() * 50 + floor * 5);
     c.coins += coins;
-    // Loot roll: items are common, weapons rare, scaling quality with floor.
+    // Loot roll: items are common, weapons rare, armor rarer, scaling with floor.
     const roll = rand();
-    if (roll < 0.12) {
+    if (roll < 0.04) {
+      // Armor find (rare).
+      const armorKey = rollDungeonArmor(floor);
+      if (armorKey && grantArmor(c, armorKey)) {
+        setMsg(`Chest: armor — ${ARMORS[armorKey].n}! (+🪙${coins})`);
+      } else {
+        const itemKey = rollItemOfGrade(grade);
+        if (itemKey) { addItemToInventory({ key: itemKey, name: ITEMS[itemKey].n, grade }); setMsg(`Chest: ${grade}-grade ${ITEMS[itemKey].n} (+🪙${coins})`); }
+        else setMsg(`Chest: +🪙${coins}`);
+      }
+    } else if (roll < 0.14) {
       // Weapon find (rarer). Quality rises with floor via rollDungeonWeapon's floor gate.
       const weaponKey = rollDungeonWeapon(floor);
       if (weaponKey && !c.ownedWeapons.includes(weaponKey)) {
@@ -1931,7 +2006,17 @@ function KrezcentQuest() {
   function updateInteractPrompt() {
     const w = world.current; const p = w.player;
     let prompt = '';
-    for (const n of w.npcs) if (Math.hypot(n.x - p.x, n.y - p.y) < 70) { prompt = n.prompt || 'Talk [SPACE]'; break; }
+    if (INTERIORS[w.zone]) {
+      const f = INTERIORS[w.zone].focus;
+      if (f && Math.hypot(f.x - p.x, f.y - p.y) < 70) prompt = f.prompt;
+      else if (p.y > INTERIORS[w.zone].h - 50 && Math.abs(p.x - INTERIORS[w.zone].w / 2) < 70) prompt = '← Exit to Hub';
+    }
+    if (!prompt && w.zone === 'hub') {
+      for (const g of ZONES.hub.gates) {
+        if (Math.hypot(g.x - p.x, g.y - p.y) < 60) { prompt = `${g.label} →`; break; }
+      }
+    }
+    if (!prompt) for (const n of w.npcs) if (Math.hypot(n.x - p.x, n.y - p.y) < 70) { prompt = n.prompt || 'Talk [SPACE]'; break; }
     if (!prompt && w.maze) for (const ch of w.maze.chests) {
       if (ch.opened) continue;
       const cx = ch.x * 40 + 20, cy = ch.y * 40 + 20;
@@ -1942,7 +2027,29 @@ function KrezcentQuest() {
   function checkZoneTransitions() {
     const w = world.current; const p = w.player;
     if (w.zone === 'starting' && p.x > 1595 && p.y > 400 && p.y < 500) enterZone('hub', 'fromStarting');
-    if (w.zone === 'hub' && p.x < 5 && p.y > 500 && p.y < 600) enterZone('starting', 'fromHub');
+    if (w.zone === 'hub' && p.x < 5 && p.y > 640 && p.y < 740) enterZone('starting', 'fromHub');
+    // Hub gates -> interiors (or special handling)
+    if (w.zone === 'hub' && !w.gateCooldown) {
+      for (const g of ZONES.hub.gates) {
+        if (Math.hypot(g.x - p.x, g.y - p.y) < 38) {
+          if (g.kind === 'party') { setMsg('The Tavern is closed — party play needs online multiplayer (future update).'); w.gateCooldown = 0.8; break; }
+          if (g.to) {
+            w.hubReturn = { x: g.x, y: g.y + 70 }; // return just below the gate
+            w.gateCooldown = 0.8;
+            enterZone(g.to);
+            break;
+          }
+        }
+      }
+    }
+    // Interior exit pad (bottom-center) -> back to hub
+    if (INTERIORS[w.zone]) {
+      const intr = INTERIORS[w.zone];
+      if (p.y > intr.h - 30 && Math.abs(p.x - intr.w / 2) < 60) {
+        w.gateCooldown = 0.8;
+        enterZone('hub');
+      }
+    }
   }
   function addFloat(x, y, text, color) { world.current.floats.push({ x, y, text, color, life: 1.2 }); }
   function addItemToInventory(item) {
@@ -1995,6 +2102,10 @@ function KrezcentQuest() {
       case 'boost15s': p.buffs.boost = 15; setMsg('Power Draught! +20% damage 15s'); break;
       case 'haste15s': p.buffs.quickstep = 15; setMsg('Swift Tonic! +25% speed 15s'); break;
       case 'guard15s': p.buffs.ironskin = 15; setMsg('Iron Tonic! -25% damage 15s'); break;
+      case 'cd50_30': p.buffs.cdHaste = 30; p.cdHasteAmt = 0.50; setMsg('Eternal Sigil! -50% cooldowns for 30s'); break;
+      case 'cd35_25': p.buffs.cdHaste = 25; p.cdHasteAmt = 0.35; setMsg('Chrono Charm! -35% cooldowns for 25s'); break;
+      case 'cd25_20': p.buffs.cdHaste = 20; p.cdHasteAmt = 0.25; setMsg('Swift Rune! -25% cooldowns for 20s'); break;
+      case 'cd15_15': p.buffs.cdHaste = 15; p.cdHasteAmt = 0.15; setMsg('Haste Bead! -15% cooldowns for 15s'); break;
       case 'shield150': p.shield = (p.shield || 0) + 150; setMsg('Shield up! +150'); break;
       case 'cleanse': c.statusEffects = []; p.blind = 0; p.slow = 0; setMsg('Cleansed!'); break;
       case 'blindAll': for (const m of monstersInRadius(p.x, p.y, 180)) m.aiCooldown = 2; setMsg('Smoke bomb!'); break;
@@ -2044,23 +2155,20 @@ function KrezcentQuest() {
     } else if (zone === 'hub') {
       w.maze = null;
       const z = ZONES.hub;
-      w.player.x = fromDir === 'fromStarting' ? 60 : z.spawn.x;
-      w.player.y = fromDir === 'fromStarting' ? 550 : z.spawn.y;
-      w.npcs = z.buildings.map(b => {
-        const npc = { x: b.x + b.w / 2, y: b.y + b.h - 20, color: b.color, kind: b.kind, building: b };
-        switch (b.kind) {
-          case 'shop': npc.prompt = 'Enter Shop [SPACE]'; npc.action = () => setModal('shop'); break;
-          case 'dungeon': npc.prompt = 'Enter Dungeon [SPACE]'; npc.action = () => setModal('dungeon_select'); break;
-          case 'pvp': npc.prompt = 'PvP Arena [SPACE]'; npc.action = () => setModal('pvp'); break;
-          case 'save': npc.prompt = 'Save & Logout [SPACE]'; npc.action = async () => { await saveCharacter(); setScreen('login'); setChar(null); setAccount(null); }; break;
-          case 'party': npc.prompt = 'Party (soon) [SPACE]'; npc.action = () => setMsg('Party play requires online multiplayer (future update)'); break;
-          case 'blacksmith': npc.prompt = 'Blacksmith [SPACE]'; npc.action = () => setModal('blacksmith'); break;
-          case 'trainer': npc.prompt = 'Attribute Trainer [SPACE]'; npc.action = () => setModal('trainer'); break;
-          case 'mystery': npc.prompt = 'Mystery Boxes [SPACE]'; npc.action = () => setModal('mystery'); break;
-        }
-        return npc;
-      });
-      setMsg('Main Hub.');
+      w.player.x = fromDir === 'fromStarting' ? 60 : (w.hubReturn ? w.hubReturn.x : z.spawn.x);
+      w.player.y = fromDir === 'fromStarting' ? 690 : (w.hubReturn ? w.hubReturn.y : z.spawn.y);
+      w.hubReturn = null;
+      w.npcs = [];
+      setMsg('The Hub Plaza. Step onto a glowing gate to enter.');
+    } else if (INTERIORS[zone]) {
+      w.maze = null;
+      const intr = INTERIORS[zone];
+      // Enter at the bottom-center (by the exit pad), facing the focus.
+      w.player.x = intr.w / 2;
+      w.player.y = intr.h - 70;
+      w.npcs = [];
+      w.interior = zone;
+      setMsg(`${intr.name}.`);
     } else if (zone === 'dungeon') {
       w.maze = generateFloor(w.floor);
       w.maze.floor = w.floor;
@@ -2085,12 +2193,14 @@ function KrezcentQuest() {
     const w = world.current; const p = w.player;
     const cam = { x: p.x - W / 2, y: p.y - H / 2 };
 
-    const bgColors = { starting: '#1a3a14', hub: '#1a1a22', dungeon: w.maze?.theme?.bg || '#0a0612' };
+    const bgColors = { starting: '#1a3a14', hub: '#0f1320', dungeon: w.maze?.theme?.bg || '#0a0612' };
+    if (INTERIORS[w.zone]) bgColors[w.zone] = '#06060a';
     ctx.fillStyle = bgColors[w.zone] || '#000';
     ctx.fillRect(0, 0, W, H);
 
     if (w.zone === 'starting') drawStartingField(ctx, W, H, cam);
     else if (w.zone === 'hub') drawHub(ctx, W, H, cam);
+    else if (INTERIORS[w.zone]) drawInterior(ctx, W, H, cam);
     else if (w.zone === 'dungeon' && w.maze) drawDungeon(ctx, W, H, cam);
 
     // Effects
@@ -2372,33 +2482,278 @@ function KrezcentQuest() {
 
   function drawHub(ctx, W, H, cam) {
     const z = ZONES.hub;
-    ctx.fillStyle = '#6b6a72';
+    const t = performance.now() / 1000;
+    // Grassy ground base
+    ctx.fillStyle = '#1d2b1a';
     ctx.fillRect(-cam.x, -cam.y, z.w, z.h);
-    for (let y = 0; y < z.h; y += 40) {
-      for (let x = 0; x < z.w; x += 40) {
-        ctx.fillStyle = ((x + y) / 40) % 2 < 1 ? '#5e5e66' : '#52525a';
-        ctx.fillRect(x - cam.x, y - cam.y, 40, 40);
-        ctx.strokeStyle = '#3f3e44'; ctx.lineWidth = 1;
-        ctx.strokeRect(x - cam.x, y - cam.y, 40, 40);
+    // subtle grass texture
+    for (let y = 0; y < z.h; y += 80) {
+      for (let x = 0; x < z.w; x += 80) {
+        const sx = x - cam.x, sy = y - cam.y;
+        if (sx < -80 || sy < -80 || sx > W || sy > H) continue;
+        ctx.fillStyle = ((x + y) / 80) % 2 < 1 ? '#21311d' : '#1b2818';
+        ctx.fillRect(sx, sy, 80, 80);
       }
     }
-    ctx.fillStyle = '#9c8767';
-    ctx.beginPath(); ctx.arc(1100 - cam.x, 540 - cam.y, 80, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = '#5d4e36'; ctx.lineWidth = 4;
-    ctx.beginPath(); ctx.arc(1100 - cam.x, 540 - cam.y, 80, 0, Math.PI * 2); ctx.stroke();
-    ctx.lineWidth = 1;
-    ctx.fillStyle = '#fff8e1';
-    ctx.beginPath(); ctx.arc(1100 - cam.x, 540 - cam.y, 30, 0, Math.PI * 2); ctx.fill();
-    for (const b of z.buildings) drawBuilding(ctx, b.x - cam.x, b.y - cam.y, b.w, b.h, b.color, b.label);
-    for (const b of z.buildings) {
-      drawLantern(ctx, b.x - cam.x, b.y + b.h + 20 - cam.y);
-      drawLantern(ctx, b.x + b.w - cam.x, b.y + b.h + 20 - cam.y);
+    // Stone paths
+    for (const pa of z.paths) {
+      if (pa.h === 0 || pa.w === 0) continue;
+      drawPath(ctx, pa.x - cam.x, pa.y - cam.y, pa.w, pa.h);
     }
-    ctx.fillStyle = '#37363c';
+    // Plaza ring under the fountain
+    const fx = z.fountain.x - cam.x, fy = z.fountain.y - cam.y;
+    ctx.fillStyle = '#6b6358';
+    ctx.beginPath(); ctx.arc(fx, fy, z.fountain.r + 34, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#7d7468';
+    ctx.beginPath(); ctx.arc(fx, fy, z.fountain.r + 20, 0, Math.PI * 2); ctx.fill();
+    drawFountain(ctx, fx, fy, z.fountain.r, t);
+    // Gates
+    for (const g of z.gates) drawGate(ctx, g.x - cam.x, g.y - cam.y, g, t);
+    // Decorations
+    for (const d of z.decor) drawDecor(ctx, d.kind, d.x - cam.x, d.y - cam.y, t);
+    // Walls
+    ctx.fillStyle = '#2a2a30';
     z.walls.forEach(wl => ctx.fillRect(wl.x - cam.x, wl.y - cam.y, wl.w, wl.h));
-    ctx.fillStyle = '#8d6e63';
-    for (let x = -40; x < 100; x += 30) ctx.fillRect(x - cam.x, 530 - cam.y, 24, 40);
-    drawSign(ctx, 10 - cam.x, 510 - cam.y, '← Field');
+    // West exit to field
+    drawSign(ctx, 6 - cam.x, 620 - cam.y, '← Field');
+    ctx.fillStyle = '#3e5d2e';
+    for (let yy = 650; yy < 730; yy += 26) ctx.fillRect(-10 - cam.x, yy - cam.y, 18, 18);
+  }
+
+  function drawInterior(ctx, W, H, cam) {
+    const w = world.current;
+    const intr = INTERIORS[w.zone];
+    const t = performance.now() / 1000;
+    // Floor
+    ctx.fillStyle = intr.floor;
+    ctx.fillRect(-cam.x, -cam.y, intr.w, intr.h);
+    // Floor tiling
+    for (let y = 0; y < intr.h; y += 48) {
+      for (let x = 0; x < intr.w; x += 48) {
+        ctx.fillStyle = ((x + y) / 48) % 2 < 1 ? shadeColor(intr.floor, 0.06) : shadeColor(intr.floor, -0.06);
+        ctx.fillRect(x - cam.x, y - cam.y, 48, 48);
+      }
+    }
+    // Walls (thick border)
+    ctx.fillStyle = intr.wall;
+    ctx.fillRect(-cam.x, -cam.y, intr.w, 24);
+    ctx.fillRect(-cam.x, intr.h - 14 - cam.y, intr.w, 14);
+    ctx.fillRect(-cam.x, -cam.y, 24, intr.h);
+    ctx.fillRect(intr.w - 24 - cam.x, -cam.y, 24, intr.h);
+    // Accent trim along the top wall
+    ctx.fillStyle = intr.accent;
+    ctx.fillRect(-cam.x, 22 - cam.y, intr.w, 3);
+    // Decor
+    for (const d of intr.decor) drawDecor(ctx, d.kind, d.x - cam.x, d.y - cam.y, t, intr.accent);
+    // Focus interaction object (glowing)
+    const f = intr.focus;
+    drawFocus(ctx, f.x - cam.x, f.y - cam.y, f.kind, intr.accent, t);
+    // Exit pad at bottom-center
+    const exX = intr.w / 2 - cam.x, exY = intr.h - 18 - cam.y;
+    ctx.save();
+    ctx.fillStyle = 'rgba(255,255,255,0.10)';
+    ctx.fillRect(exX - 55, exY - 12, 110, 22);
+    ctx.strokeStyle = intr.accent; ctx.lineWidth = 2; ctx.globalAlpha = 0.6 + Math.sin(t * 3) * 0.2;
+    ctx.strokeRect(exX - 55, exY - 12, 110, 22);
+    ctx.restore();
+    ctx.fillStyle = '#cfe8ff'; ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('↓ EXIT', exX, exY + 3); ctx.textAlign = 'left';
+    // Room name
+    ctx.fillStyle = intr.accent; ctx.font = 'bold 16px serif'; ctx.textAlign = 'center';
+    ctx.fillText(intr.name, intr.w / 2 - cam.x, 52 - cam.y); ctx.textAlign = 'left';
+  }
+
+  function drawPath(ctx, x, y, w, h) {
+    ctx.fillStyle = '#574e44'; ctx.fillRect(x, y, w, h);
+    ctx.fillStyle = '#6b6054';
+    const step = 28;
+    if (w > h) { for (let i = x + 4; i < x + w; i += step) { ctx.fillRect(i, y + 4, step - 8, h - 8); } }
+    else { for (let i = y + 4; i < y + h; i += step) { ctx.fillRect(x + 4, i, w - 8, step - 8); } }
+  }
+
+  function drawFountain(ctx, x, y, r, t) {
+    ctx.fillStyle = '#8a8076';
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#3a6ea5';
+    ctx.beginPath(); ctx.arc(x, y, r - 14, 0, Math.PI * 2); ctx.fill();
+    // water shimmer
+    ctx.fillStyle = 'rgba(255,255,255,0.18)';
+    for (let i = 0; i < 5; i++) { const a = t * 0.6 + i * 1.25; ctx.beginPath(); ctx.arc(x + Math.cos(a) * (r - 30), y + Math.sin(a) * (r - 30), 5, 0, Math.PI * 2); ctx.fill(); }
+    // central pillar
+    ctx.fillStyle = '#9a9088'; ctx.beginPath(); ctx.arc(x, y, 16, 0, Math.PI * 2); ctx.fill();
+    // spout droplets
+    ctx.fillStyle = '#bfe3ff';
+    for (let i = 0; i < 8; i++) { const a = i / 8 * Math.PI * 2; const rr = 18 + (Math.sin(t * 4 + i) + 1) * 10; ctx.beginPath(); ctx.arc(x + Math.cos(a) * rr, y + Math.sin(a) * rr, 2.5, 0, Math.PI * 2); ctx.fill(); }
+    ctx.fillStyle = '#cfeaff'; ctx.beginPath(); ctx.arc(x, y - 4, 5, 0, Math.PI * 2); ctx.fill();
+  }
+
+  function drawGate(ctx, x, y, g, t) {
+    // Phase seed must come from the gate's WORLD position (g.x), not screen x —
+    // otherwise the glow re-seeds every frame as the camera scrolls (flicker).
+    const seed = (g.x || 0) * 0.01;
+    const glow = 0.55 + Math.sin(t * 2.5 + seed) * 0.25;
+    // approach pad
+    ctx.fillStyle = '#4a4038'; ctx.fillRect(x - 34, y + 8, 68, 30);
+    // arch pillars
+    ctx.fillStyle = shadeColor(g.color, -0.4);
+    ctx.fillRect(x - 30, y - 44, 12, 60);
+    ctx.fillRect(x + 18, y - 44, 12, 60);
+    // arch top
+    ctx.fillStyle = g.color;
+    ctx.beginPath(); ctx.moveTo(x - 30, y - 40); ctx.quadraticCurveTo(x, y - 70, x + 30, y - 40); ctx.lineTo(x + 30, y - 30); ctx.quadraticCurveTo(x, y - 56, x - 30, y - 30); ctx.closePath(); ctx.fill();
+    // arch-specific flair
+    if (g.arch === 'cloth') { ctx.fillStyle = shadeColor(g.color, 0.3); ctx.fillRect(x - 26, y - 40, 52, 8); }
+    else if (g.arch === 'forge') { ctx.fillStyle = '#ff7043'; for (let i = 0; i < 3; i++) ctx.fillRect(x - 16 + i * 14, y - 36, 6, 6); }
+    else if (g.arch === 'rune') { ctx.fillStyle = '#e1bee7'; ctx.beginPath(); ctx.arc(x, y - 40, 5, 0, Math.PI * 2); ctx.fill(); }
+    else if (g.arch === 'iron') { ctx.fillStyle = '#b0bec5'; ctx.fillRect(x - 4, y - 52, 8, 12); }
+    // portal shimmer between pillars
+    ctx.save();
+    ctx.globalAlpha = glow * 0.5;
+    const grad = ctx.createLinearGradient(x, y - 40, x, y + 12);
+    grad.addColorStop(0, g.color); grad.addColorStop(1, shadeColor(g.color, 0.5));
+    ctx.fillStyle = grad;
+    ctx.fillRect(x - 18, y - 36, 36, 48);
+    ctx.restore();
+    // glowing sparkles
+    ctx.save(); ctx.globalAlpha = glow; ctx.fillStyle = '#fff';
+    for (let i = 0; i < 3; i++) { const yy = y - 30 + ((t * 30 + i * 18) % 44); ctx.beginPath(); ctx.arc(x - 8 + (i * 8), y + 8 - (yy - y), 1.5, 0, Math.PI * 2); ctx.fill(); }
+    ctx.restore();
+    // label banner
+    ctx.fillStyle = shadeColor(g.color, -0.5); ctx.fillRect(x - 38, y - 66, 76, 16);
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 11px serif'; ctx.textAlign = 'center';
+    ctx.fillText(g.label, x, y - 54); ctx.textAlign = 'left';
+  }
+
+  function drawDecor(ctx, kind, x, y, t, accent) {
+    switch (kind) {
+      case 'tree': drawTree(ctx, x, y); break;
+      case 'lamp':
+        ctx.fillStyle = '#2e2a26'; ctx.fillRect(x - 2, y - 30, 4, 30);
+        ctx.fillStyle = '#ffd54f'; ctx.shadowColor = '#ffca28'; ctx.shadowBlur = 16;
+        ctx.beginPath(); ctx.arc(x, y - 34, 6, 0, Math.PI * 2); ctx.fill(); ctx.shadowBlur = 0;
+        break;
+      case 'flowerbed':
+        ctx.fillStyle = '#3a2a1a'; ctx.fillRect(x - 22, y - 10, 44, 20);
+        for (let i = 0; i < 6; i++) { ctx.fillStyle = ['#e91e63','#ffeb3b','#9c27b0','#ff5722'][i % 4]; ctx.beginPath(); ctx.arc(x - 16 + i * 7, y - 2 + (i % 2) * 6, 3, 0, Math.PI * 2); ctx.fill(); }
+        break;
+      case 'statue':
+        ctx.fillStyle = '#8d8d96'; ctx.fillRect(x - 16, y + 6, 32, 12);
+        ctx.fillStyle = '#a8a8b2'; ctx.fillRect(x - 8, y - 30, 16, 36);
+        ctx.beginPath(); ctx.arc(x, y - 34, 8, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#bdbdc7'; ctx.fillRect(x + 6, y - 40, 4, 26); // raised sword
+        break;
+      case 'crates':
+        ctx.fillStyle = '#7a5230'; ctx.fillRect(x - 14, y - 14, 16, 16); ctx.fillRect(x + 2, y - 10, 14, 14);
+        ctx.strokeStyle = '#4e3420'; ctx.strokeRect(x - 14, y - 14, 16, 16); ctx.strokeRect(x + 2, y - 10, 14, 14);
+        break;
+      case 'barrel':
+        ctx.fillStyle = '#6d4c2f'; ctx.beginPath(); ctx.ellipse(x, y - 6, 9, 13, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = '#3e2a18'; ctx.beginPath(); ctx.moveTo(x - 9, y - 6); ctx.lineTo(x + 9, y - 6); ctx.stroke();
+        break;
+      case 'banner':
+        ctx.fillStyle = '#7b1fa2'; ctx.fillRect(x - 6, y - 40, 12, 40);
+        ctx.beginPath(); ctx.moveTo(x - 6, y); ctx.lineTo(x, y + 8); ctx.lineTo(x + 6, y); ctx.closePath(); ctx.fill();
+        ctx.fillStyle = '#ce93d8'; ctx.fillRect(x - 3, y - 36, 6, 6);
+        break;
+      case 'stall':
+        ctx.fillStyle = '#6d4c2f'; ctx.fillRect(x - 30, y, 60, 8);
+        ctx.fillStyle = '#c0392b'; ctx.fillRect(x - 34, y - 28, 68, 14);
+        for (let i = 0; i < 5; i++) { ctx.fillStyle = i % 2 ? '#c0392b' : '#ecf0f1'; ctx.fillRect(x - 34 + i * 14, y - 14, 14, 8); }
+        ctx.fillStyle = '#5d4037'; ctx.fillRect(x - 30, y + 8, 4, 16); ctx.fillRect(x + 26, y + 8, 4, 16);
+        break;
+      case 'rug':
+        ctx.fillStyle = accent || '#7b3ff2'; ctx.globalAlpha = 0.4; ctx.fillRect(x - 40, y - 24, 80, 48); ctx.globalAlpha = 1;
+        ctx.strokeStyle = accent || '#fff'; ctx.strokeRect(x - 40, y - 24, 80, 48);
+        break;
+      case 'furnace':
+        ctx.fillStyle = '#3e2723'; ctx.fillRect(x - 24, y - 30, 48, 50);
+        ctx.fillStyle = '#ff5722'; ctx.shadowColor = '#ff9800'; ctx.shadowBlur = 24;
+        ctx.beginPath(); ctx.arc(x, y, 12, 0, Math.PI * 2); ctx.fill(); ctx.shadowBlur = 0;
+        ctx.fillStyle = '#ffd54f'; ctx.beginPath(); ctx.arc(x, y + 2, 6, 0, Math.PI * 2); ctx.fill();
+        break;
+      case 'anvil_deco':
+        ctx.fillStyle = '#37474f'; ctx.fillRect(x - 14, y - 4, 28, 10); ctx.fillRect(x - 6, y + 6, 12, 10);
+        ctx.fillStyle = '#546e7a'; ctx.fillRect(x - 18, y - 8, 24, 6);
+        break;
+      case 'weaponrack':
+        ctx.fillStyle = '#5d4037'; ctx.fillRect(x - 20, y - 30, 40, 6); ctx.fillRect(x - 20, y + 20, 40, 6);
+        ctx.strokeStyle = '#cfd8dc'; ctx.lineWidth = 2;
+        for (let i = 0; i < 3; i++) { ctx.beginPath(); ctx.moveTo(x - 14 + i * 14, y - 26); ctx.lineTo(x - 14 + i * 14, y + 22); ctx.stroke(); }
+        ctx.lineWidth = 1;
+        break;
+      case 'pillar':
+        ctx.fillStyle = '#4a4a55'; ctx.fillRect(x - 12, y - 40, 24, 60);
+        ctx.fillStyle = '#5c5c68'; ctx.fillRect(x - 16, y - 44, 32, 8); ctx.fillRect(x - 16, y + 16, 32, 8);
+        break;
+      case 'runeglow':
+        ctx.save(); ctx.globalAlpha = 0.4 + Math.sin(t * 2) * 0.2; ctx.strokeStyle = accent || '#8e44ad'; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(x, y, 30, 0, Math.PI * 2); ctx.stroke();
+        ctx.beginPath(); ctx.arc(x, y, 18, 0, Math.PI * 2); ctx.stroke(); ctx.restore(); ctx.lineWidth = 1;
+        break;
+      case 'candles':
+        for (let i = -1; i <= 1; i++) { ctx.fillStyle = '#ecf0f1'; ctx.fillRect(x + i * 8 - 1, y - 8, 3, 10); ctx.fillStyle = '#ffca28'; ctx.shadowColor = '#ffd54f'; ctx.shadowBlur = 10; ctx.beginPath(); ctx.arc(x + i * 8, y - 10, 2, 0, Math.PI * 2); ctx.fill(); ctx.shadowBlur = 0; }
+        break;
+      case 'bones':
+        ctx.strokeStyle = '#e0e0e0'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(x - 10, y); ctx.lineTo(x + 10, y - 6); ctx.stroke();
+        ctx.beginPath(); ctx.arc(x - 12, y + 2, 4, 0, Math.PI * 2); ctx.stroke(); ctx.lineWidth = 1;
+        break;
+      case 'torch': drawTorch(ctx, x, y, t); break;
+      case 'crystalball':
+        ctx.fillStyle = '#5d4037'; ctx.fillRect(x - 8, y + 6, 16, 8);
+        ctx.save(); ctx.globalAlpha = 0.85; ctx.fillStyle = accent || '#16a085'; ctx.shadowColor = accent || '#16a085'; ctx.shadowBlur = 18;
+        ctx.beginPath(); ctx.arc(x, y - 4, 12, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+        break;
+      case 'fireplace':
+        ctx.fillStyle = '#37312b'; ctx.fillRect(x - 28, y - 24, 56, 40);
+        ctx.fillStyle = '#ff7043'; ctx.shadowColor = '#ff9800'; ctx.shadowBlur = 20;
+        ctx.beginPath(); ctx.moveTo(x - 12, y + 12); ctx.quadraticCurveTo(x, y - 16 + Math.sin(t * 6) * 4, x + 12, y + 12); ctx.closePath(); ctx.fill(); ctx.shadowBlur = 0;
+        break;
+      case 'bookshelf':
+        ctx.fillStyle = '#4e342e'; ctx.fillRect(x - 18, y - 30, 36, 60);
+        for (let r = 0; r < 3; r++) for (let i = 0; i < 5; i++) { ctx.fillStyle = ['#c0392b','#2980b9','#27ae60','#f39c12','#8e44ad'][(i + r) % 5]; ctx.fillRect(x - 16 + i * 6, y - 28 + r * 20, 5, 16); }
+        break;
+      default: break;
+    }
+  }
+
+  function drawFocus(ctx, x, y, kind, accent, t) {
+    const glow = 0.6 + Math.sin(t * 2.5) * 0.3;
+    // glowing base ring
+    ctx.save(); ctx.globalAlpha = glow * 0.5; ctx.fillStyle = accent;
+    ctx.beginPath(); ctx.ellipse(x, y + 14, 30, 10, 0, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+    switch (kind) {
+      case 'merchant': case 'desk':
+        ctx.fillStyle = '#6d4c2f'; ctx.fillRect(x - 26, y - 6, 52, 18);
+        ctx.fillStyle = '#8d6e3f'; ctx.fillRect(x - 26, y - 10, 52, 5);
+        break;
+      case 'anvil':
+        ctx.fillStyle = '#37474f'; ctx.fillRect(x - 18, y - 6, 36, 12); ctx.fillRect(x - 8, y + 6, 16, 12);
+        ctx.fillStyle = '#546e7a'; ctx.fillRect(x - 24, y - 12, 30, 8);
+        break;
+      case 'altar': case 'banner_post':
+        ctx.fillStyle = '#5c5c68'; ctx.fillRect(x - 16, y - 8, 32, 22);
+        ctx.fillStyle = accent; ctx.save(); ctx.globalAlpha = glow;
+        ctx.beginPath(); ctx.arc(x, y - 14, 7, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+        break;
+      case 'portal':
+        ctx.save(); ctx.globalAlpha = glow; ctx.strokeStyle = accent; ctx.lineWidth = 4;
+        ctx.beginPath(); ctx.ellipse(x, y - 6, 18, 26, 0, 0, Math.PI * 2); ctx.stroke();
+        ctx.globalAlpha = glow * 0.4; ctx.fillStyle = accent;
+        ctx.beginPath(); ctx.ellipse(x, y - 6, 14, 22, 0, 0, Math.PI * 2); ctx.fill(); ctx.restore(); ctx.lineWidth = 1;
+        break;
+      case 'crystalball':
+        ctx.fillStyle = '#4e342e'; ctx.fillRect(x - 10, y + 4, 20, 10);
+        ctx.save(); ctx.globalAlpha = glow; ctx.fillStyle = accent; ctx.shadowColor = accent; ctx.shadowBlur = 22;
+        ctx.beginPath(); ctx.arc(x, y - 6, 14, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+        break;
+      default:
+        ctx.fillStyle = accent; ctx.save(); ctx.globalAlpha = glow;
+        ctx.beginPath(); ctx.arc(x, y, 12, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+    }
+    // upward sparkle
+    ctx.save(); ctx.globalAlpha = glow; ctx.fillStyle = '#fff';
+    const sy = y - 20 - ((t * 24) % 16);
+    ctx.beginPath(); ctx.arc(x, sy, 1.6, 0, Math.PI * 2); ctx.fill(); ctx.restore();
   }
 
   function drawDungeon(ctx, W, H, cam) {
@@ -2643,7 +2998,7 @@ function KrezcentQuest() {
   }
   function drawTorch(ctx, x, y, t) {
     ctx.fillStyle = '#5d4037'; ctx.fillRect(x - 2, y - 10, 4, 14);
-    const flicker = Math.sin(t * 8 + x) * 2;
+    const flicker = Math.sin(t * 8) * 2;
     ctx.fillStyle = '#ff6f00'; ctx.shadowColor = '#ffab00'; ctx.shadowBlur = 18;
     ctx.beginPath(); ctx.ellipse(x, y - 18 + flicker, 5, 8 + flicker, 0, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = '#ffd54f';
@@ -3310,6 +3665,22 @@ function KrezcentQuest() {
     }
     ctx.fillStyle = '#3e2723'; ctx.fillRect(x - 10, y + 7, 20, 3);
     ctx.fillStyle = '#fbc02d'; ctx.fillRect(x - 2, y + 7, 4, 3);
+    // Equipped armor overlay — pauldrons + chestplate sheen, tinted by armor type.
+    if (c.armor && ARMORS[c.armor]) {
+      const ac = ARMORS[c.armor].color || '#90a4ae';
+      ctx.fillStyle = ac;
+      // pauldrons
+      ctx.beginPath(); ctx.ellipse(x - 11, y - 1, 5, 4, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(x + 11, y - 1, 5, 4, 0, 0, Math.PI * 2); ctx.fill();
+      // chest plate band
+      ctx.fillStyle = shadeColor(ac, 0.15);
+      ctx.fillRect(x - 8, y + 1, 16, 5);
+      ctx.strokeStyle = shadeColor(ac, -0.3); ctx.lineWidth = 1;
+      ctx.strokeRect(x - 8, y + 1, 16, 5);
+      // center rivet
+      ctx.fillStyle = shadeColor(ac, 0.4);
+      ctx.beginPath(); ctx.arc(x, y + 3, 1.6, 0, Math.PI * 2); ctx.fill();
+    }
     const armA = walkPhase * 2;
     ctx.fillStyle = c.skin;
     ctx.fillRect(x - 13, y - 2 + armA, 3, 12);
@@ -3780,6 +4151,7 @@ function KrezcentQuest() {
         knownAbilities, equippedAbilityList: [],
         ownedWeapons: [weapon],
         weaponLevels: { [weapon]: 1 },
+        ownedArmors: [], armorLevels: {}, armor: null,
         statusEffects: [],
         level, exp: 0, maxHp, hp: maxHp, maxMana, mana: maxMana, maxEnergy, energy: maxEnergy,
         inventory: [], coins: setCoins != null ? setCoins : (100 + bonusCoins),
@@ -3952,7 +4324,7 @@ function KrezcentQuest() {
             )}
           </div>
           <div className="bg-black/70 p-2 rounded pointer-events-auto text-xs border border-purple-700">
-            <div className="text-purple-200 font-bold">{world.current.zone === 'dungeon' ? `Dungeon F${world.current.floor} (${world.current.maze?.type || ''})` : world.current.zone === 'starting' ? 'Starting Field' : 'Main Hub'}</div>
+            <div className="text-purple-200 font-bold">{world.current.zone === 'dungeon' ? `Dungeon F${world.current.floor} (${world.current.maze?.type || ''})` : world.current.zone === 'starting' ? 'Starting Field' : INTERIORS[world.current.zone] ? INTERIORS[world.current.zone].name : 'Hub Plaza'}</div>
             <div className="text-slate-300 mt-1">WASD move · J/click attack · 1-7 attr · QERFG aff</div>
             <div className="text-slate-300">TAB inv · C stats · L loadout · SPACE interact</div>
             <button onClick={() => setModal('loadout')}
@@ -4013,6 +4385,111 @@ function KrezcentQuest() {
           );
         })}
       </div>
+    );
+  }
+
+  function SettingsModal() {
+    const [view, setView] = useState('main'); // main | account | delete
+    const [confirmText, setConfirmText] = useState('');
+    const [confirmPw, setConfirmPw] = useState('');
+    const [err, setErr] = useState('');
+    const [busy, setBusy] = useState(false);
+
+    async function doSaveExit() {
+      setBusy(true);
+      await saveCharacter();
+      setModal(null);
+      setScreen('login');
+      setChar(null);
+      setAccount(null);
+    }
+
+    async function doDelete() {
+      setErr('');
+      if (confirmText.trim().toUpperCase() !== 'DELETE') { setErr('Type DELETE to confirm.'); return; }
+      if (!confirmPw) { setErr('Enter your password to confirm.'); return; }
+      setBusy(true);
+      const ok = await SaveAdapter.verifyPassword(account.username, confirmPw);
+      if (!ok) { setErr('Incorrect password.'); setBusy(false); return; }
+      await SaveAdapter.deleteCharacter(account.username);
+      setModal(null);
+      setChar(null);
+      setScreen('create');
+    }
+
+    return (
+      <ModalBox title="Settings" onClose={() => setModal(null)}>
+        {view === 'main' && (
+          <div className="space-y-3">
+            <p className="text-slate-400 text-sm">Manage your game session and account.</p>
+            <button onClick={doSaveExit} disabled={busy}
+              className="w-full py-3 bg-blue-700 hover:bg-blue-600 rounded font-bold flex items-center justify-center gap-2">
+              💾 Save &amp; Exit to Login
+            </button>
+            <button onClick={() => { setView('account'); setErr(''); }}
+              className="w-full py-3 bg-slate-700 hover:bg-slate-600 rounded font-bold flex items-center justify-center gap-2">
+              👤 Account
+            </button>
+            <div className="text-xs text-slate-500 pt-2 border-t border-slate-700">
+              Your progress saves automatically when you exit here.
+            </div>
+          </div>
+        )}
+
+        {view === 'account' && (
+          <div className="space-y-4">
+            <button onClick={() => setView('main')} className="text-purple-300 hover:text-purple-200 text-sm">← Back to Settings</button>
+            <div className="bg-slate-900 rounded p-3 space-y-2">
+              <div className="text-purple-300 font-bold">Account Details</div>
+              <div className="flex justify-between"><span className="text-slate-400">Username</span><span className="font-mono">{account?.username}</span></div>
+              <div className="flex justify-between items-center">
+                <span className="text-slate-400">Password</span>
+                <span className="font-mono flex items-center">
+                  <span>••••••••</span>
+                </span>
+              </div>
+              <p className="text-xs text-slate-500">
+                For security, your password is stored hashed and can't be shown in plain text. If you've forgotten it, you'd need to delete this character and start a new account. Keep it somewhere safe.
+              </p>
+            </div>
+            <div className="bg-red-950/40 border border-red-800 rounded p-3 space-y-2">
+              <div className="text-red-300 font-bold">Danger Zone</div>
+              <p className="text-xs text-slate-400">Deleting your character permanently erases all progress, items, weapons, and armor. This cannot be undone.</p>
+              <button onClick={() => { setView('delete'); setErr(''); setConfirmText(''); setConfirmPw(''); }}
+                className="w-full py-2 bg-red-800 hover:bg-red-700 rounded font-bold">
+                🗑 Delete Character
+              </button>
+            </div>
+          </div>
+        )}
+
+        {view === 'delete' && (
+          <div className="space-y-4">
+            <button onClick={() => setView('account')} className="text-purple-300 hover:text-purple-200 text-sm">← Cancel</button>
+            <div className="bg-red-950/40 border border-red-800 rounded p-4 space-y-3">
+              <div className="text-red-300 font-bold text-lg">Are you absolutely sure?</div>
+              <p className="text-sm text-slate-300">
+                This will permanently delete <span className="font-bold">{char?.name || 'your character'}</span> and all progress. There is no way to recover it.
+              </p>
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Type <span className="text-red-300 font-bold">DELETE</span> to confirm</label>
+                <input value={confirmText} onChange={e => setConfirmText(e.target.value)} placeholder="DELETE"
+                  className="w-full px-3 py-2 rounded bg-slate-900 border border-slate-600 focus:border-red-500 outline-none" />
+              </div>
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Enter your password</label>
+                <input value={confirmPw} onChange={e => setConfirmPw(e.target.value)} type="password" placeholder="Password"
+                  className="w-full px-3 py-2 rounded bg-slate-900 border border-slate-600 focus:border-red-500 outline-none" />
+              </div>
+              {err && <div className="text-red-400 text-sm">{err}</div>}
+              <button onClick={doDelete} disabled={busy}
+                className="w-full py-2 bg-red-700 hover:bg-red-600 rounded font-bold disabled:opacity-50">
+                {busy ? 'Deleting…' : 'Permanently Delete Character'}
+              </button>
+            </div>
+          </div>
+        )}
+      </ModalBox>
     );
   }
 
@@ -4358,9 +4835,26 @@ function KrezcentQuest() {
 
   function BlacksmithModal() {
     const c = char;
+    const [bsTab, setBsTab] = useState('weapons');
     return (
-      <ModalBox title="Blacksmith — Weapons" onClose={() => setModal(null)}>
-        <div className="text-yellow-400 mb-3">🪙 {c.coins} coins · Equipped: <span className="text-yellow-300">{WEAPONS[c.weapon]?.n}</span></div>
+      <ModalBox title="Blacksmith" onClose={() => setModal(null)}>
+        <div className="text-yellow-400 mb-3">🪙 {c.coins} coins</div>
+        <div className="flex gap-2 mb-4">
+          <button onClick={() => setBsTab('weapons')}
+            className={`flex-1 py-2 rounded font-bold ${bsTab === 'weapons' ? 'bg-orange-700' : 'bg-slate-700 hover:bg-slate-600'}`}>⚔ Weapons</button>
+          <button onClick={() => setBsTab('armor')}
+            className={`flex-1 py-2 rounded font-bold ${bsTab === 'armor' ? 'bg-sky-700' : 'bg-slate-700 hover:bg-slate-600'}`}>🛡 Armor</button>
+        </div>
+        {bsTab === 'weapons' && <BlacksmithWeapons c={c} />}
+        {bsTab === 'armor' && <BlacksmithArmor c={c} />}
+      </ModalBox>
+    );
+  }
+
+  function BlacksmithWeapons({ c }) {
+    return (
+      <>
+        <div className="text-sm text-slate-400 mb-2">Equipped: <span className="text-yellow-300">{WEAPONS[c.weapon]?.n}</span></div>
         <div className="text-purple-300 font-bold mb-2">Your Collection</div>
         <div className="text-xs text-slate-400 mb-2">Upgrade weapons up to level {MAX_WEAPON_LEVEL}. Each level multiplies damage; stronger weapons cost far more to level.</div>
         <div className="grid grid-cols-2 gap-2 mb-4">
@@ -4438,10 +4932,96 @@ function KrezcentQuest() {
             );
           })}
         </div>
-      </ModalBox>
+      </>
     );
   }
 
+  function BlacksmithArmor({ c }) {
+    return (
+      <>
+        <div className="text-sm text-slate-400 mb-2">Equipped: <span className="text-sky-300">{c.armor ? ARMORS[c.armor]?.n : 'None'}</span></div>
+        <div className="text-purple-300 font-bold mb-2">Your Armor</div>
+        <div className="text-xs text-slate-400 mb-2">Armor reduces incoming damage (capped, so dodging still matters). Heavy armor protects more but slows you slightly. Upgrade up to level {MAX_ARMOR_LEVEL}.</div>
+        {(c.ownedArmors || []).length === 0 && (
+          <div className="text-xs text-slate-500 mb-3 italic">You own no armor yet. Buy some from the forge below or find it (rarely) in the dungeon.</div>
+        )}
+        <div className="grid grid-cols-2 gap-2 mb-4">
+          {(c.ownedArmors || []).map(ak => {
+            const a = ARMORS[ak]; if (!a) return null;
+            const equipped = c.armor === ak;
+            const lvl = (c.armorLevels && c.armorLevels[ak]) || 1;
+            const curRed = Math.round(armorReductionAt(ak, lvl) * 100);
+            const maxed = lvl >= MAX_ARMOR_LEVEL;
+            const upCost = maxed ? null : armorUpgradeCost(ak, lvl);
+            const nextRed = maxed ? curRed : Math.round(armorReductionAt(ak, lvl + 1) * 100);
+            return (
+              <div key={ak} className="bg-slate-900 p-2 rounded">
+                <div className="flex justify-between items-baseline">
+                  <span className="font-bold" style={{ color: a.color }}>{a.n}</span>
+                  <span className={`text-xs ${maxed ? 'text-yellow-300' : 'text-slate-400'}`}>Lv {lvl}/{MAX_ARMOR_LEVEL}</span>
+                </div>
+                <div className="text-xs text-slate-400 capitalize">{a.type}{a.moveMod < 1 ? ` · ${Math.round((1 - a.moveMod) * 100)}% slower` : (a.moveMod > 1 ? ` · ${Math.round((a.moveMod - 1) * 100)}% faster` : '')}</div>
+                <div className="text-xs mt-1">Reduces dmg <span className="text-sky-300 font-bold">{curRed}%</span></div>
+                <div className="flex gap-0.5 mt-1">
+                  {Array.from({ length: MAX_ARMOR_LEVEL }).map((_, i) => (
+                    <div key={i} className={`h-1.5 flex-1 rounded ${i < lvl ? 'bg-sky-400' : 'bg-slate-700'}`} />
+                  ))}
+                </div>
+                <div className="grid grid-cols-2 gap-1 mt-2">
+                  <button onClick={() => { c.armor = equipped ? null : ak; setChar({ ...c }); setMsg(equipped ? 'Unequipped armor' : `Equipped ${a.n}`); }}
+                    className={`text-xs py-1 rounded ${equipped ? 'bg-sky-800 text-sky-200' : 'bg-green-700 hover:bg-green-600'}`}>
+                    {equipped ? 'Unequip' : 'Equip'}
+                  </button>
+                  <button onClick={() => {
+                    if (maxed) { setMsg('Already at max level'); return; }
+                    if (c.coins < upCost) { setMsg(`Need 🪙 ${upCost} to upgrade`); return; }
+                    c.coins -= upCost;
+                    c.armorLevels = c.armorLevels || {};
+                    c.armorLevels[ak] = lvl + 1;
+                    setChar({ ...c });
+                    AudioMgr.play('levelup');
+                    setMsg(`${a.n} upgraded to Lv ${lvl + 1}! (${curRed}% → ${nextRed}% reduction)`);
+                  }} disabled={maxed}
+                    className={`text-xs py-1 rounded ${maxed ? 'bg-yellow-800 text-yellow-300' : 'bg-sky-700 hover:bg-sky-600'}`}>
+                    {maxed ? 'MAX' : `↑ 🪙${upCost}`}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <div className="text-purple-300 font-bold mb-2">Buy from the Forge</div>
+        <div className="grid grid-cols-2 gap-2">
+          {ARMOR_SHOP.map(s => {
+            const a = ARMORS[s.key]; if (!a) return null;
+            const owned = (c.ownedArmors || []).includes(s.key);
+            return (
+              <div key={s.key} className="bg-slate-900 p-2 rounded">
+                <div className="font-bold" style={{ color: a.color }}>{a.n}</div>
+                <div className="text-xs text-slate-400 capitalize">{a.type} armor</div>
+                <div className="text-xs mt-1">Reduces {Math.round(armorReductionAt(s.key, 1) * 100)}% <span className="text-slate-500">→ {Math.round(armorReductionAt(s.key, MAX_ARMOR_LEVEL) * 100)}% @Lv{MAX_ARMOR_LEVEL}</span></div>
+                <div className="flex justify-between items-center mt-2">
+                  <span className="text-yellow-400">🪙 {s.price}</span>
+                  <button onClick={() => {
+                    if (owned) { setMsg('Already owned'); return; }
+                    if (c.coins < s.price) { setMsg('Not enough coins'); return; }
+                    c.coins -= s.price;
+                    c.ownedArmors = [...(c.ownedArmors || []), s.key];
+                    c.armorLevels = c.armorLevels || {}; c.armorLevels[s.key] = 1;
+                    setChar({ ...c });
+                    setMsg(`Bought ${a.n}!`);
+                  }} disabled={owned}
+                    className={`text-xs py-1 px-2 rounded ${owned ? 'bg-slate-700 text-slate-400' : 'bg-green-700 hover:bg-green-600'}`}>
+                    {owned ? 'Owned' : 'Buy'}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </>
+    );
+  }
   function TrainerModal() {
     const c = char; const g = trainerGrade; const cfg = ATTRIBUTE_TRAINER[g];
     const knownKeys = (c.attrs || []).map(a => a.key);
@@ -4619,6 +5199,7 @@ function KrezcentQuest() {
           {modal === 'blacksmith' && <BlacksmithModal />}
           {modal === 'trainer' && <TrainerModal />}
           {modal === 'mystery' && <MysteryModal />}
+          {modal === 'settings' && <SettingsModal />}
         </>
       )}
       {msg && (

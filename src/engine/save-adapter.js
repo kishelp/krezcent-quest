@@ -84,6 +84,21 @@ class LocalSaveAdapter {
     const acct = await this.getAccount(username);
     return acct?.character || null;
   }
+
+  // Verify a plaintext password against the stored account hash.
+  async verifyPassword(username, password) {
+    const acct = await this.getAccount(username);
+    if (!acct) return false;
+    return acct.passHash === simpleHash(password);
+  }
+
+  // Delete just the character, keeping the account so the player can re-create.
+  async deleteCharacter(username) {
+    const acct = await this.getAccount(username);
+    if (!acct) return;
+    acct.character = null;
+    await this.setAccount(username, acct);
+  }
 }
 
 // ---------------- ApiSaveAdapter (stub) ----------------
@@ -141,6 +156,8 @@ class ApiSaveAdapter {
   async register() { return { ok: false, error: 'Online mode not enabled' }; }
   async saveCharacter() { throw new Error('ApiSaveAdapter not implemented yet'); }
   async loadCharacter() { return null; }
+  async verifyPassword() { return false; }
+  async deleteCharacter() { throw new Error('ApiSaveAdapter not implemented yet'); }
 }
 
 // ---------------- The active adapter ----------------
