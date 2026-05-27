@@ -28,6 +28,11 @@ export const ITEMS = {
   chrono_charm:   { g: 'A', n: 'Chrono Charm',         e: 'cd35_25',     price: 420,  shopSells: true,  stack: true, desc: '-35% cooldowns for 25s' },
   swift_rune:     { g: 'B', n: 'Swift Rune',           e: 'cd25_20',     price: 180,  shopSells: true,  stack: true, desc: '-25% cooldowns for 20s' },
   haste_bead:     { g: 'C', n: 'Haste Bead',           e: 'cd15_15',     price: 70,   shopSells: true,  stack: true, desc: '-15% cooldowns for 15s' },
+  // Status-immunity items (Update 10) — block stun/freeze/control/confusion/blind/silence from monsters & bosses.
+  warding_amulet: { g: 'S', n: 'Warding Amulet',       e: 'immune_45',   price: 1800, shopSells: true,  stack: true, desc: 'Immune to ALL boss/monster effects for 45s' },
+  ward_charm:     { g: 'A', n: 'Ward Charm',           e: 'immune_25',   price: 550,  shopSells: true,  stack: true, desc: 'Immune to ALL boss/monster effects for 25s' },
+  ward_pendant:   { g: 'B', n: 'Ward Pendant',         e: 'immune_15',   price: 220,  shopSells: true,  stack: true, desc: 'Immune to ALL boss/monster effects for 15s' },
+  ward_token:     { g: 'C', n: 'Ward Token',           e: 'immune_8',    price: 85,   shopSells: true,  stack: true, desc: 'Immune to ALL boss/monster effects for 8s' },
   // ---------------- B ----------------
   heal_potion_b:  { g: 'B', n: 'Heal Potion',          e: 'heal20',      price: 120,  shopSells: true,  stack: true, desc: '+20% HP' },
   mana_potion_b:  { g: 'B', n: 'Mana Potion',          e: 'mana20',      price: 110,  shopSells: true,  stack: true, desc: '+20% mana' },

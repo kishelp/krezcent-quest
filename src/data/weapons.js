@@ -39,7 +39,7 @@ export const WEAPONS = {
     look: 'sword', swing: 'slash', proj: null,
     mech: 'cleave', mechVal: 0.15,
     mdesc: 'Cleave: +15% damage when 2+ enemies are in the swing.',
-    tier: 1, price: 150, shopBuy: true, dropWeight: 0, dropMin: 1,
+    tier: 1, price: 520, shopBuy: true, dropWeight: 0, dropMin: 1,
     style: 'Balanced blade. Cleaves crowds.',
   },
   knife: {
@@ -47,7 +47,7 @@ export const WEAPONS = {
     look: 'knife', swing: 'jab', proj: null,
     mech: 'bleed', mechVal: 4,
     mdesc: 'Bleed: each hit stacks a bleed dealing 4 dmg/sec for 3s.',
-    tier: 1, price: 100, shopBuy: true, dropWeight: 0, dropMin: 1,
+    tier: 1, price: 750, shopBuy: true, dropWeight: 0, dropMin: 1,
     style: 'Fast & cheap. Stacks bleed.',
   },
   bow: {
@@ -55,7 +55,7 @@ export const WEAPONS = {
     look: 'bow', swing: 'none', proj: 'arrow',
     mech: 'longshot', mechVal: 0.5,
     mdesc: 'Longshot: arrows deal up to +50% damage the farther they fly.',
-    tier: 1, price: 250, shopBuy: true, dropWeight: 0, dropMin: 1,
+    tier: 1, price: 170, shopBuy: true, dropWeight: 0, dropMin: 1,
     style: 'Ranged. Rewards distance.',
   },
   spike_shield: {
@@ -63,7 +63,7 @@ export const WEAPONS = {
     look: 'shield', swing: 'thrust', proj: null,
     mech: 'thorns', mechVal: 0.4,
     mdesc: 'Thorns: reflects 40% of melee damage taken back at attackers.',
-    tier: 1, price: 200, shopBuy: true, dropWeight: 0, dropMin: 1,
+    tier: 1, price: 120, shopBuy: true, dropWeight: 0, dropMin: 1,
     style: 'Defensive (-30% dmg taken). Reflects.',
   },
 
@@ -73,7 +73,7 @@ export const WEAPONS = {
     look: 'spear', swing: 'thrust', proj: null,
     mech: 'knockback', mechVal: 60,
     mdesc: 'Knockback: long thrust shoves enemies 60px back.',
-    tier: 2, price: 600, shopBuy: true, dropWeight: 16, dropMin: 3,
+    tier: 2, price: 360, shopBuy: true, dropWeight: 16, dropMin: 3,
     style: 'Long thrust that pushes enemies away.',
   },
   katana: {
@@ -81,7 +81,7 @@ export const WEAPONS = {
     look: 'katana', swing: 'slash', proj: null,
     mech: 'crit_bleed', mechVal: 8,
     mdesc: 'On a crit, applies a deep bleed (8 dmg/sec for 4s).',
-    tier: 2, price: 900, shopBuy: true, dropWeight: 12, dropMin: 5,
+    tier: 2, price: 34500, shopBuy: true, dropWeight: 12, dropMin: 5,
     style: 'High crit. Crits cause heavy bleed.',
   },
   knuckles: {
@@ -89,7 +89,7 @@ export const WEAPONS = {
     look: 'knuckles', swing: 'jab', proj: null,
     mech: 'combo', mechVal: 0.08,
     mdesc: 'Combo: each rapid hit in a row adds +8% damage (resets after 1.5s).',
-    tier: 2, price: 700, shopBuy: true, dropWeight: 14, dropMin: 3,
+    tier: 2, price: 3200, shopBuy: true, dropWeight: 14, dropMin: 3,
     style: 'Very fast. Builds a damage combo.',
   },
   dual_swords: {
@@ -97,7 +97,7 @@ export const WEAPONS = {
     look: 'dual', swing: 'spin', proj: null,
     mech: 'doublestrike', mechVal: 0,
     mdesc: 'Double Strike: every swing lands twice.',
-    tier: 2, price: 850, shopBuy: true, dropWeight: 12, dropMin: 5,
+    tier: 2, price: 50000, shopBuy: true, dropWeight: 12, dropMin: 5,
     style: 'Two hits per swing.',
   },
   axe: {
@@ -105,7 +105,7 @@ export const WEAPONS = {
     look: 'axe', swing: 'chop', proj: null,
     mech: 'armor_break', mechVal: 0,
     mdesc: 'Armor Break: ignores enemy elemental resistance entirely.',
-    tier: 2, price: 1100, shopBuy: true, dropWeight: 10, dropMin: 8,
+    tier: 2, price: 1550, shopBuy: true, dropWeight: 10, dropMin: 8,
     style: 'Heavy & wide. Ignores resistances.',
   },
   morning_star: {
@@ -113,7 +113,7 @@ export const WEAPONS = {
     look: 'morningstar', swing: 'spin', proj: null,
     mech: 'stun', mechVal: 1.0,
     mdesc: 'Stun: 15% chance to stun for 1s on hit.',
-    tier: 2, price: 1000, shopBuy: true, dropWeight: 10, dropMin: 8,
+    tier: 2, price: 1100, shopBuy: true, dropWeight: 10, dropMin: 8,
     style: 'Heavy. May stun.',
   },
   scythe: {
@@ -121,7 +121,7 @@ export const WEAPONS = {
     look: 'scythe', swing: 'slash', proj: null,
     mech: 'reap', mechVal: 0.25,
     mdesc: 'Reap: +120% damage to enemies under 25% HP. Heals 10% of damage.',
-    tier: 3, price: 1800, shopBuy: true, dropWeight: 7, dropMin: 12,
+    tier: 3, price: 4650, shopBuy: true, dropWeight: 7, dropMin: 12,
     style: 'Wide. Executes the weak, lifesteals.',
   },
   chain: {
@@ -129,7 +129,7 @@ export const WEAPONS = {
     look: 'chain', swing: 'poke', proj: null,
     mech: 'pull', mechVal: 70,
     mdesc: 'Pull: yanks the struck enemy 70px toward you.',
-    tier: 2, price: 750, shopBuy: true, dropWeight: 12, dropMin: 5,
+    tier: 2, price: 620, shopBuy: true, dropWeight: 12, dropMin: 5,
     style: 'Long & narrow. Pulls enemies in.',
   },
   crossbow: {
@@ -137,7 +137,7 @@ export const WEAPONS = {
     look: 'crossbow', swing: 'none', proj: 'bolt',
     mech: 'pierce_bonus', mechVal: 0.15,
     mdesc: 'Pierce: bolts pass through; +15% damage per extra enemy pierced.',
-    tier: 2, price: 1200, shopBuy: true, dropWeight: 9, dropMin: 8,
+    tier: 2, price: 430, shopBuy: true, dropWeight: 9, dropMin: 8,
     style: 'Ranged. Pierces & ramps.',
   },
   staff: {
@@ -145,7 +145,7 @@ export const WEAPONS = {
     look: 'staff', swing: 'poke', proj: null,
     mech: 'spell_echo', mechVal: 0.2,
     mdesc: 'Spell Echo: +25% affinity damage, and abilities have a 20% chance to fire twice.',
-    tier: 3, price: 2000, shopBuy: true, dropWeight: 7, dropMin: 12,
+    tier: 3, price: 300, shopBuy: true, dropWeight: 7, dropMin: 12,
     style: 'Affinity dmg +25%. Echoes spells.',
   },
   whip: {
@@ -153,7 +153,7 @@ export const WEAPONS = {
     look: 'whip', swing: 'slash', proj: null,
     mech: 'lash', mechVal: 0,
     mdesc: 'Lash: hits every enemy along its full length in a line.',
-    tier: 2, price: 800, shopBuy: true, dropWeight: 11, dropMin: 5,
+    tier: 2, price: 1300, shopBuy: true, dropWeight: 11, dropMin: 5,
     style: 'Long & fast. Hits in a line.',
   },
   war_hammer: {
@@ -161,7 +161,7 @@ export const WEAPONS = {
     look: 'hammer', swing: 'chop', proj: null,
     mech: 'quake', mechVal: 70,
     mdesc: 'Quake: each hit sends a shockwave dealing 40% damage in a 70px radius.',
-    tier: 3, price: 2200, shopBuy: true, dropWeight: 6, dropMin: 15,
+    tier: 3, price: 1850, shopBuy: true, dropWeight: 6, dropMin: 15,
     style: 'Slow & brutal. Shockwave on hit.',
   },
 
@@ -171,7 +171,7 @@ export const WEAPONS = {
     look: 'throwing_knives', swing: 'none', proj: 'knife',
     mech: 'fan3', mechVal: 0.12,
     mdesc: 'Fan: throws 3 knives in a tight spread.',
-    tier: 2, price: 650, shopBuy: true, dropWeight: 12, dropMin: 4,
+    tier: 2, price: 5550, shopBuy: true, dropWeight: 12, dropMin: 4,
     style: 'Throws a fan of 3 blades.',
   },
   slingshot: {
@@ -179,7 +179,7 @@ export const WEAPONS = {
     look: 'slingshot', swing: 'none', proj: 'stone',
     mech: 'ricochet', mechVal: 2,
     mdesc: 'Ricochet: the stone bounces off walls up to 2 times.',
-    tier: 1, price: 400, shopBuy: true, dropWeight: 15, dropMin: 2,
+    tier: 1, price: 210, shopBuy: true, dropWeight: 15, dropMin: 2,
     style: 'Cheap. Stones bounce off walls.',
   },
   boomerang: {
@@ -187,7 +187,7 @@ export const WEAPONS = {
     look: 'boomerang', swing: 'none', proj: 'boomerang',
     mech: 'return', mechVal: 0,
     mdesc: 'Return: flies out and curves back, hitting enemies both ways.',
-    tier: 2, price: 900, shopBuy: true, dropWeight: 10, dropMin: 6,
+    tier: 2, price: 250, shopBuy: true, dropWeight: 10, dropMin: 6,
     style: 'Returns to you, hitting twice.',
   },
   shuriken: {
@@ -195,7 +195,7 @@ export const WEAPONS = {
     look: 'shuriken', swing: 'none', proj: 'shuriken',
     mech: 'spread5', mechVal: 0.35,
     mdesc: 'Spread: hurls 5 shuriken in a wide fan.',
-    tier: 2, price: 1000, shopBuy: true, dropWeight: 9, dropMin: 8,
+    tier: 2, price: 41500, shopBuy: true, dropWeight: 9, dropMin: 8,
     style: 'Wide fan of spinning stars.',
   },
   chakram: {
@@ -203,7 +203,7 @@ export const WEAPONS = {
     look: 'chakram', swing: 'none', proj: 'chakram',
     mech: 'orbit_return', mechVal: 0,
     mdesc: 'Orbit: spinning ring pierces all, then returns through them again.',
-    tier: 3, price: 2400, shopBuy: true, dropWeight: 6, dropMin: 14,
+    tier: 3, price: 2250, shopBuy: true, dropWeight: 6, dropMin: 14,
     style: 'Piercing ring that returns.',
   },
   blow_dart: {
@@ -211,7 +211,7 @@ export const WEAPONS = {
     look: 'blow_dart', swing: 'none', proj: 'dart',
     mech: 'poison', mechVal: 10,
     mdesc: 'Poison: tiny hit, but injects poison for 10 dmg/sec over 5s.',
-    tier: 2, price: 850, shopBuy: true, dropWeight: 10, dropMin: 6,
+    tier: 2, price: 140, shopBuy: true, dropWeight: 10, dropMin: 6,
     style: 'Weak hit, deadly poison.',
   },
   catapult: {
@@ -219,7 +219,7 @@ export const WEAPONS = {
     look: 'catapult', swing: 'none', proj: 'boulder',
     mech: 'explosive', mechVal: 90,
     mdesc: 'Explosive: lobs a boulder that bursts for AoE damage in a 90px radius.',
-    tier: 3, price: 3200, shopBuy: true, dropWeight: 5, dropMin: 18,
+    tier: 3, price: 900, shopBuy: true, dropWeight: 5, dropMin: 18,
     style: 'Slow. Lobs an exploding boulder.',
   },
   ballista: {
@@ -227,7 +227,7 @@ export const WEAPONS = {
     look: 'ballista', swing: 'none', proj: 'ballista_bolt',
     mech: 'piercer', mechVal: 90,
     mdesc: 'Piercer: enormous bolt pierces everything and knocks back hard.',
-    tier: 4, price: 5500, shopBuy: true, dropWeight: 3, dropMin: 25,
+    tier: 4, price: 20000, shopBuy: true, dropWeight: 3, dropMin: 25,
     style: 'Massive piercing bolt + knockback.',
   },
   hand_cannon: {
@@ -235,7 +235,7 @@ export const WEAPONS = {
     look: 'hand_cannon', swing: 'none', proj: 'pellet',
     mech: 'shotgun', mechVal: 0.5,
     mdesc: 'Shotgun: short-range blast of 7 pellets; devastating up close.',
-    tier: 3, price: 2800, shopBuy: true, dropWeight: 6, dropMin: 16,
+    tier: 3, price: 6700, shopBuy: true, dropWeight: 6, dropMin: 16,
     style: 'Close-range scatter blast.',
   },
   magic_bow: {
@@ -243,7 +243,7 @@ export const WEAPONS = {
     look: 'magic_bow', swing: 'none', proj: 'magic_arrow',
     mech: 'homing', mechVal: 0,
     mdesc: 'Homing: ethereal arrows curve toward the nearest enemy.',
-    tier: 4, price: 6000, shopBuy: true, dropWeight: 3, dropMin: 28,
+    tier: 4, price: 14000, shopBuy: true, dropWeight: 3, dropMin: 28,
     style: 'Arrows seek their target.',
   },
 
@@ -253,7 +253,7 @@ export const WEAPONS = {
     look: 'trident', swing: 'thrust', proj: 'trident',
     mech: 'trident', mechVal: 1.5,
     mdesc: 'Hybrid: 1st attack is a melee thrust that can FREEZE (1.5s); 2nd attack THROWS the trident as a piercing spear.',
-    tier: 4, price: 7000, shopBuy: true, dropWeight: 3, dropMin: 30,
+    tier: 4, price: 16500, shopBuy: true, dropWeight: 3, dropMin: 30,
     style: 'Melee thrust (freezes) then throw.',
   },
   magic_sword: {
@@ -261,7 +261,7 @@ export const WEAPONS = {
     look: 'magic_sword', swing: 'slash', proj: 'wave',
     mech: 'mpwave', mechVal: 0.2,
     mdesc: 'MP Wave: instead of a normal swing, fires a wide magic wave costing 10% MP that deals 20% of an enemy\u2019s max HP. Low on MP = fires at greatly reduced power.',
-    tier: 5, price: 18000, shopBuy: true, dropWeight: 1, dropMin: 45,
+    tier: 5, price: 2700, shopBuy: true, dropWeight: 1, dropMin: 45,
     style: 'Fires % max-HP magic waves (uses MP).',
   },
   flame_blade: {
@@ -269,7 +269,7 @@ export const WEAPONS = {
     look: 'flame_blade', swing: 'slash', proj: null,
     mech: 'burn', mechVal: 12,
     mdesc: 'Burn: hits ignite enemies for 12 dmg/sec over 4s and leave a fire trail.',
-    tier: 3, price: 3000, shopBuy: true, dropWeight: 5, dropMin: 18,
+    tier: 3, price: 11500, shopBuy: true, dropWeight: 5, dropMin: 18,
     style: 'Sets enemies ablaze.',
   },
   frost_fang: {
@@ -277,7 +277,7 @@ export const WEAPONS = {
     look: 'frost_fang', swing: 'slash', proj: null,
     mech: 'freeze', mechVal: 1.2,
     mdesc: 'Freeze: 30% chance to freeze the target solid for 1.2s.',
-    tier: 3, price: 3400, shopBuy: true, dropWeight: 5, dropMin: 20,
+    tier: 3, price: 8050, shopBuy: true, dropWeight: 5, dropMin: 20,
     style: 'Chance to freeze on hit.',
   },
   thunder_spear: {
@@ -285,7 +285,7 @@ export const WEAPONS = {
     look: 'thunder_spear', swing: 'thrust', proj: null,
     mech: 'chain_lightning', mechVal: 0.5,
     mdesc: 'Chain Lightning: each hit arcs to up to 3 nearby enemies for 50% damage.',
-    tier: 4, price: 8000, shopBuy: true, dropWeight: 2, dropMin: 32,
+    tier: 4, price: 29000, shopBuy: true, dropWeight: 2, dropMin: 32,
     style: 'Lightning chains between foes.',
   },
   vampire_scythe: {
@@ -293,7 +293,7 @@ export const WEAPONS = {
     look: 'vampire_scythe', swing: 'spin', proj: null,
     mech: 'vampiric', mechVal: 0.35,
     mdesc: 'Vampiric: heals you for 35% of all damage dealt.',
-    tier: 4, price: 9000, shopBuy: true, dropWeight: 2, dropMin: 35,
+    tier: 4, price: 24000, shopBuy: true, dropWeight: 2, dropMin: 35,
     style: 'Massive lifesteal scythe.',
   },
   gravity_maul: {
@@ -301,7 +301,7 @@ export const WEAPONS = {
     look: 'gravity_maul', swing: 'chop', proj: null,
     mech: 'gravity', mechVal: 120,
     mdesc: 'Gravity: pulls all nearby enemies toward you, then slams for bonus AoE damage.',
-    tier: 4, price: 10000, shopBuy: true, dropWeight: 2, dropMin: 38,
+    tier: 4, price: 3850, shopBuy: true, dropWeight: 2, dropMin: 38,
     style: 'Pulls enemies in, then slams.',
   },
   void_edge: {
@@ -309,7 +309,7 @@ export const WEAPONS = {
     look: 'void_edge', swing: 'slash', proj: null,
     mech: 'execute', mechVal: 0.12,
     mdesc: 'Execute: instantly kills non-boss enemies under 12% HP; killing an enemy restores 8% of your max HP.',
-    tier: 5, price: 22000, shopBuy: true, dropWeight: 1, dropMin: 50,
+    tier: 5, price: 60000, shopBuy: true, dropWeight: 1, dropMin: 50,
     style: 'Executes the weak. Heals on kill.',
   },
   storm_fan: {
@@ -317,7 +317,7 @@ export const WEAPONS = {
     look: 'storm_fan', swing: 'spin', proj: null,
     mech: 'whirl', mechVal: 0,
     mdesc: 'Whirl: every swing spins a full 360\u00b0, hitting everything around you.',
-    tier: 3, price: 3600, shopBuy: true, dropWeight: 5, dropMin: 20,
+    tier: 3, price: 9650, shopBuy: true, dropWeight: 5, dropMin: 20,
     style: 'Spins to hit all directions.',
   },
 };

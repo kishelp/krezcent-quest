@@ -54,6 +54,7 @@ function migrateChar(c) {
   for (const ak of c.ownedArmors) { if (!c.armorLevels[ak]) c.armorLevels[ak] = 1; }
   if (c.armor === undefined) c.armor = null;
   if (!c.statusEffects) c.statusEffects = [];
+  if (c.maxCoins == null || c.maxCoins < c.coins) c.maxCoins = c.coins;
   return c;
 }
 
@@ -66,6 +67,7 @@ function KrezcentQuest() {
   const [shopTab, setShopTab] = useState('buy');
   const [pvpOpp, setPvpOpp] = useState(null);
   const [loadoutTab, setLoadoutTab] = useState('abilities');
+  const [loadoutAffFilter, setLoadoutAffFilter] = useState('All');
   const [boxSpin, setBoxSpin] = useState(null);
   const [trainerGrade, setTrainerGrade] = useState('F');
   const [vp, setVp] = useState({ w: typeof window !== 'undefined' ? window.innerWidth : 1024, h: typeof window !== 'undefined' ? window.innerHeight : 768 });
@@ -96,6 +98,13 @@ function KrezcentQuest() {
   useEffect(() => { modalRef.current = modal; }, [modal]);
   useEffect(() => { screenRef.current = screen; }, [screen]);
   useEffect(() => { vpRef.current = vp; }, [vp]);
+
+  // Auto-dismiss the notification toast after 5 seconds (Update 10).
+  useEffect(() => {
+    if (!msg) return;
+    const t = setTimeout(() => setMsg(''), 5000);
+    return () => clearTimeout(t);
+  }, [msg]);
 
   useEffect(() => {
     const onResize = () => setVp({ w: window.innerWidth, h: window.innerHeight });
@@ -375,12 +384,12 @@ function KrezcentQuest() {
       ef.life -= dt;
       // Orbit/nova that follow the player track its position each frame
       if (ef.follow) { ef.x = p.x; ef.y = p.y; }
-      // Lingering damage fields tick every 0.4s
+      // Lingering damage fields tick every 0.3s; each tick deals 35% of listed damage.
       if (ef.type === 'field' && ef.fromPlayer && w.maze) {
         ef.tickAcc = (ef.tickAcc || 0) + dt;
-        if (ef.tickAcc >= 0.4) {
+        if (ef.tickAcc >= 0.3) {
           ef.tickAcc = 0;
-          const per = ef.dmg * 0.18;
+          const per = ef.dmg * 0.35;
           for (const m of w.maze.monsters) { if (m.hp <= 0) continue; if (Math.hypot(m.x * 40 + 20 - ef.x, m.y * 40 + 20 - ef.y) < ef.radius) damageMonster(m, per, ef.aff); }
           if (!w.maze.boss.defeated && w.maze.bossHp != null && Math.hypot(w.maze.bossPx - ef.x, w.maze.bossPy - ef.y) < ef.radius + 20) damageBoss(per, ef.aff);
         }
@@ -495,11 +504,14 @@ function KrezcentQuest() {
 
     w.floats = w.floats.map(f => ({ ...f, life: f.life - dt, y: f.y - dt * 30 })).filter(f => f.life > 0);
     if (w.gateCooldown) { w.gateCooldown -= dt; if (w.gateCooldown <= 0) w.gateCooldown = 0; }
+    if (c && (c.maxCoins == null || c.coins > c.maxCoins)) c.maxCoins = c.coins;
     updateInteractPrompt();
     checkZoneTransitions();
   }
 
   function hasStatus(c, kind) { return (c.statusEffects || []).some(s => s.kind === kind); }
+  function isStatusImmune(p) { return p.buffs && p.buffs.statusImmune > 0; }
+
   function addStatus(c, status) {
     c.statusEffects = c.statusEffects || [];
     const existing = c.statusEffects.find(s => s.kind === status.kind);
@@ -527,6 +539,8 @@ function KrezcentQuest() {
   function applyOnHitStatus(c, attack) {
     if (!attack || attack.kind === 'normal') return;
     const p = world.current.player;
+    // Status immunity: any monster/boss-applied status is blocked.
+    if (isStatusImmune(p)) { addFloat(p.x, p.y - 40, 'IMMUNE', '#ffd54f'); return; }
     switch (attack.kind) {
       case 'freeze': addStatus(c, { kind: 'freeze', dur: attack.dur || 2, slow: attack.slow || 0.5 }); addFloat(p.x, p.y - 40, 'FROZEN', '#80deea'); break;
       case 'burn': addStatus(c, { kind: 'burn', dur: attack.dur || 3, dps: attack.dps || 8 }); addFloat(p.x, p.y - 40, 'BURNING', '#ff7043'); break;
@@ -546,7 +560,7 @@ function KrezcentQuest() {
     const ny = p.y + (dy / d) * force * -0.3;
     if (!collidesWall(nx, p.y, false)) p.x = nx;
     if (!collidesWall(p.x, ny, false)) p.y = ny;
-    p.stun = Math.max(p.stun, 0.2);
+    if (!isStatusImmune(p)) p.stun = Math.max(p.stun, 0.2);
   }
 
   function applyFloorEffect(w, c, p, dt, fx) {
@@ -706,7 +720,7 @@ function KrezcentQuest() {
         case BOSS_AI_PATTERNS.BLINDER: {
           m.bossCooldown = def.blindInterval || 6.0;
           w.effects.push({ x: m.bossPx, y: m.bossPy, type: 'aoe', life: 0.6, color: '#212121', radius: 220 });
-          if (Math.hypot(p.x - m.bossPx, p.y - m.bossPy) < 220 && p.invuln <= 0) {
+          if (Math.hypot(p.x - m.bossPx, p.y - m.bossPy) < 220 && p.invuln <= 0 && !isStatusImmune(p)) {
             p.blind = Math.max(p.blind, def.blindDur || 3);
             setMsg('You are blinded!');
           }
@@ -926,7 +940,7 @@ function KrezcentQuest() {
         break; }
       case 'blind':
         w.effects.push({ x: m.bossPx, y: m.bossPy, type: 'aoe', life: 0.6, color: '#111', radius: prm.r || 200 });
-        if (Math.hypot(p.x - m.bossPx, p.y - m.bossPy) < (prm.r || 200) && p.invuln <= 0) { p.blind = Math.max(p.blind, prm.dur || 3); setMsg('Blinded!'); }
+        if (Math.hypot(p.x - m.bossPx, p.y - m.bossPy) < (prm.r || 200) && p.invuln <= 0 && !isStatusImmune(p)) { p.blind = Math.max(p.blind, prm.dur || 3); setMsg('Blinded!'); }
         break;
       case 'pillars': {
         const n = prm.n || 5;
@@ -939,7 +953,7 @@ function KrezcentQuest() {
         break; }
       case 'quake':
         w.effects.push({ x: m.bossPx, y: m.bossPy, type: 'nova', life: 0.5, delay: 0.1, dmg: baseDmg * 0.8, aff, radius: prm.r || 130, fromPlayer: false, color: col, fam });
-        if (Math.hypot(p.x - m.bossPx, p.y - m.bossPy) < (prm.r || 130) && p.invuln <= 0) { p.stun = Math.max(p.stun, 0.4); }
+        if (Math.hypot(p.x - m.bossPx, p.y - m.bossPy) < (prm.r || 130) && p.invuln <= 0 && !isStatusImmune(p)) { p.stun = Math.max(p.stun, 0.4); }
         break;
       case 'mirror': {
         // Copy the player's most recently used ability entry, if any
@@ -964,10 +978,11 @@ function KrezcentQuest() {
         break; }
       case 'blizzard_call':
         for (let i = 0; i < 6; i++) { const px2 = m.bossPx + (rand() - 0.5) * 420, py2 = m.bossPy + (rand() - 0.5) * 420; w.effects.push({ x: px2, y: py2, type: 'field', life: 2.0, dmg: baseDmg * 0.5, aff: 'Ice', radius: 60, fromPlayer: false, color: '#80deea', fam: 'water', tickAcc: 0 }); }
-        if (Math.hypot(p.x - m.bossPx, p.y - m.bossPy) < 300) p.slow = Math.max(p.slow, 2);
+        if (Math.hypot(p.x - m.bossPx, p.y - m.bossPy) < 300 && !isStatusImmune(p)) p.slow = Math.max(p.slow, 2);
         break;
       case 'confuse_pulse':
-        if (Math.hypot(p.x - m.bossPx, p.y - m.bossPy) < 220) { p.confused = Math.max(p.confused || 0, 2.5); setMsg('Controls scrambled!'); }
+        if (Math.hypot(p.x - m.bossPx, p.y - m.bossPy) < 220 && !isStatusImmune(p)) { p.confused = Math.max(p.confused || 0, 2.5); setMsg('Controls scrambled!'); }
+        else if (isStatusImmune(p)) addFloat(p.x, p.y - 40, 'IMMUNE', '#ffd54f');
         w.effects.push({ x: m.bossPx, y: m.bossPy, type: 'aoe', life: 0.5, color: '#ba68c8', radius: 220 });
         break;
       case 'enrage':
@@ -1187,8 +1202,12 @@ function KrezcentQuest() {
   }
   function onPlayerDeath() {
     const c = charRef.current;
-    setMsg('You died. Returning to hub with half your coins lost.');
-    c.hp = c.maxHp; c.coins = Math.floor(c.coins / 2);
+    // Penalty: lose 20% of the player's max-coins high-water mark (was 50% of current).
+    const maxC = c.maxCoins || c.coins;
+    const penalty = Math.floor(maxC * 0.20);
+    c.coins = Math.max(0, c.coins - penalty);
+    setMsg(`You died. Returning to hub. Lost ${penalty} coins (20% of your peak).`);
+    c.hp = c.maxHp;
     c.mana = c.maxMana; c.energy = c.maxEnergy;
     c.statusEffects = [];
     setChar({ ...c });
@@ -1778,9 +1797,9 @@ function KrezcentQuest() {
       for (let i = 0; i < 3; i++) w.effects.push({ x: p.x, y: p.y, type: 'nova', life: 0.4, delay: i * 0.3, dmg: dmg / 3, aff, radius: 100, fromPlayer: true, color, fam, follow: true });
 
     } else if (abil.k === 'dot_field') {
-      // A lingering hazardous field that ticks damage over time.
+      // A lingering hazardous field that ticks damage over time. Buffed in Update 10.
       const tx = p.x + Math.cos(ang) * 90, ty = p.y + Math.sin(ang) * 90;
-      w.effects.push({ x: tx, y: ty, type: 'field', life: 3.0, dmg, aff, radius: 90, fromPlayer: true, color, fam, tickAcc: 0 });
+      w.effects.push({ x: tx, y: ty, type: 'field', life: 3.5, dmg, aff, radius: 110, fromPlayer: true, color, fam, tickAcc: 0 });
 
     } else if (abil.k === 'aoe') {
       w.effects.push({ x: p.x, y: p.y, type: 'nova', life: 0.55, delay: 0.08, dmg, aff, radius: 140, fromPlayer: true, color, fam });
@@ -1838,20 +1857,22 @@ function KrezcentQuest() {
   function castChain(p, ang, dmg, aff, color) {
     const w = world.current; if (!w.maze) return;
     let cx = p.x, cy = p.y; const hitOrder = []; const used = new Set();
-    for (let hop = 0; hop < 5; hop++) {
-      let best = null, bd = (hop === 0 ? 360 : 180);
+    // 6 hops with strong falloff retention: 100%, 85%, 85%, 85%, 85%, 70% per hop (Update 10 buff).
+    const hopMult = [1.0, 0.85, 0.85, 0.85, 0.85, 0.70];
+    for (let hop = 0; hop < hopMult.length; hop++) {
+      let best = null, bd = (hop === 0 ? 400 : 220);
       for (const m of w.maze.monsters) { if (m.hp <= 0 || used.has(m)) continue; const d = Math.hypot(m.x * 40 + 20 - cx, m.y * 40 + 20 - cy); if (d < bd) { bd = d; best = m; } }
       if (!best) break;
       used.add(best); hitOrder.push([cx, cy, best.x * 40 + 20, best.y * 40 + 20]);
-      damageMonster(best, dmg * (hop === 0 ? 1 : 0.6), aff);
+      damageMonster(best, dmg * hopMult[hop], aff);
       cx = best.x * 40 + 20; cy = best.y * 40 + 20;
     }
     if (!hitOrder.length) {
-      // no targets: fire a short bolt forward so it isn't wasted
       hitOrder.push([p.x, p.y, p.x + Math.cos(ang) * 200, p.y + Math.sin(ang) * 200]);
     }
     w.effects.push({ x: p.x, y: p.y, type: 'chain', life: 0.3, color, segs: hitOrder });
-    if (!w.maze.boss.defeated && w.maze.bossHp != null && Math.hypot(w.maze.bossPx - p.x, w.maze.bossPy - p.y) < 360) damageBoss(dmg, aff);
+    // Chain still arcs to the boss if it's in range, at full damage (buffed from previous version).
+    if (!w.maze.boss.defeated && w.maze.bossHp != null && Math.hypot(w.maze.bossPx - p.x, w.maze.bossPy - p.y) < 420) damageBoss(dmg, aff);
   }
 
   function castBeam(p, ang, dmg, aff, color, fam) {
@@ -2055,12 +2076,15 @@ function KrezcentQuest() {
   function addItemToInventory(item) {
     const c = charRef.current;
     const data = item.key ? ITEMS[item.key] : null;
-    const stackable = data && data.stack && !item.isTrophy;
+    // Stack if item is a regular stackable consumable, OR if it's a trophy (stack by grade/key).
+    const stackable = (data && data.stack && !item.isTrophy) || item.isTrophy;
     const cap = MAX_STACK || 99;
     if (stackable) {
-      // Fill existing stacks of the same key that have room
+      // Fill existing stacks of the same key (trophies match by key, which encodes grade).
       for (const slot of c.inventory) {
-        if (slot.key === item.key && !slot.isTrophy && (slot.qty || 1) < cap) {
+        const sameTrophy = item.isTrophy && slot.isTrophy && slot.key === item.key;
+        const sameItem = !item.isTrophy && !slot.isTrophy && slot.key === item.key;
+        if ((sameTrophy || sameItem) && (slot.qty || 1) < cap) {
           slot.qty = (slot.qty || 1) + (item.qty || 1);
           let overflow = 0;
           if (slot.qty > cap) { overflow = slot.qty - cap; slot.qty = cap; }
@@ -2106,6 +2130,10 @@ function KrezcentQuest() {
       case 'cd35_25': p.buffs.cdHaste = 25; p.cdHasteAmt = 0.35; setMsg('Chrono Charm! -35% cooldowns for 25s'); break;
       case 'cd25_20': p.buffs.cdHaste = 20; p.cdHasteAmt = 0.25; setMsg('Swift Rune! -25% cooldowns for 20s'); break;
       case 'cd15_15': p.buffs.cdHaste = 15; p.cdHasteAmt = 0.15; setMsg('Haste Bead! -15% cooldowns for 15s'); break;
+      case 'immune_45': p.buffs.statusImmune = 45; setMsg('Warding Amulet! Immune to status effects 45s'); break;
+      case 'immune_25': p.buffs.statusImmune = 25; setMsg('Ward Charm! Immune to status effects 25s'); break;
+      case 'immune_15': p.buffs.statusImmune = 15; setMsg('Ward Pendant! Immune to status effects 15s'); break;
+      case 'immune_8':  p.buffs.statusImmune = 8;  setMsg('Ward Token! Immune to status effects 8s'); break;
       case 'shield150': p.shield = (p.shield || 0) + 150; setMsg('Shield up! +150'); break;
       case 'cleanse': c.statusEffects = []; p.blind = 0; p.slow = 0; setMsg('Cleansed!'); break;
       case 'blindAll': for (const m of monstersInRadius(p.x, p.y, 180)) m.aiCooldown = 2; setMsg('Smoke bomb!'); break;
@@ -4315,13 +4343,42 @@ function KrezcentQuest() {
             <Bar label="EN" val={char.energy} max={char.maxEnergy} color="#fbc02d" />
             <div className="text-yellow-400 mt-1">🪙 {char.coins}</div>
             <div className="text-slate-300 text-xs">EXP: {Math.floor(char.exp)}/{expForLevel(char.level)}</div>
-            {statuses.length > 0 && (
-              <div className="mt-1 flex gap-1 flex-wrap">
-                {statuses.map((s, i) => (
-                  <span key={i} className="text-xs px-1 rounded bg-slate-700">{s.kind} {s.dur.toFixed(1)}s</span>
-                ))}
-              </div>
-            )}
+            {(() => {
+              // Aggregate all active effects: statusEffects (burn/poison/freeze/curse) +
+              // player-state flags (confused, silenced, blind, stun, slow) + buff timers
+              // (statusImmune, cdHaste). Each entry: { kind, dur, color }.
+              const p = world.current.player;
+              const all = [];
+              for (const s of statuses) {
+                const col = ({ burn: '#ff7043', poison: '#9ccc65', freeze: '#80deea', curse: '#9c27b0' }[s.kind]) || '#bdbdbd';
+                all.push({ kind: s.kind, dur: s.dur, color: col });
+              }
+              if (p) {
+                if (p.confused > 0) all.push({ kind: 'confused', dur: p.confused, color: '#ba68c8' });
+                if (p.silenced > 0) all.push({ kind: 'silenced', dur: p.silenced, color: '#90a4ae' });
+                if (p.blind > 0)    all.push({ kind: 'blinded',  dur: p.blind,    color: '#212121' });
+                if (p.stun > 0)     all.push({ kind: 'stunned',  dur: p.stun,     color: '#fff176' });
+                if (p.slow > 0)     all.push({ kind: 'slowed',   dur: p.slow,     color: '#4fc3f7' });
+                if (p.slipTimer > 0)all.push({ kind: 'slippery', dur: p.slipTimer,color: '#b3e5fc' });
+                if (p.buffs && p.buffs.statusImmune > 0) all.push({ kind: 'IMMUNE',  dur: p.buffs.statusImmune, color: '#ffd54f' });
+                if (p.buffs && p.buffs.cdHaste > 0)      all.push({ kind: 'haste',   dur: p.buffs.cdHaste,      color: '#80cbc4' });
+                if (p.buffs && p.buffs.boost > 0)        all.push({ kind: 'boost',   dur: p.buffs.boost,        color: '#ef9a9a' });
+                if (p.buffs && p.buffs.ironskin > 0)     all.push({ kind: 'iron',    dur: p.buffs.ironskin,     color: '#b0bec5' });
+                if (p.buffs && p.buffs.quickstep > 0)    all.push({ kind: 'swift',   dur: p.buffs.quickstep,    color: '#aed581' });
+                if (p.buffs && p.buffs.immortal > 0)     all.push({ kind: 'phoenix', dur: p.buffs.immortal,     color: '#ff8a65' });
+              }
+              if (!all.length) return null;
+              return (
+                <div className="mt-1 flex gap-1 flex-wrap">
+                  {all.map((e, i) => (
+                    <span key={i} className="text-xs px-1.5 rounded font-bold"
+                      style={{ background: 'rgba(20,20,25,0.85)', color: e.color, border: `1px solid ${e.color}` }}>
+                      {e.kind} {e.dur.toFixed(1)}s
+                    </span>
+                  ))}
+                </div>
+              );
+            })()}
           </div>
           <div className="bg-black/70 p-2 rounded pointer-events-auto text-xs border border-purple-700">
             <div className="text-purple-200 font-bold">{world.current.zone === 'dungeon' ? `Dungeon F${world.current.floor} (${world.current.maze?.type || ''})` : world.current.zone === 'starting' ? 'Starting Field' : INTERIORS[world.current.zone] ? INTERIORS[world.current.zone].name : 'Hub Plaza'}</div>
@@ -4606,25 +4663,48 @@ function KrezcentQuest() {
                 {(c.equippedAbilityList || []).length === 0 && <div className="text-slate-500 text-xs italic">Nothing equipped.</div>}
               </div>
             </div>
-            <div className="text-purple-300 text-sm font-bold mb-1">Known</div>
+            <div className="text-purple-300 text-sm font-bold mb-1 flex items-center justify-between">
+              <span>Known ({knownAbilityEntries.length} abilities across {Object.keys(c.knownAbilities || {}).length} affinities)</span>
+              <select value={loadoutAffFilter} onChange={e => setLoadoutAffFilter(e.target.value)}
+                className="bg-slate-900 text-white text-xs px-2 py-1 rounded border border-slate-600">
+                <option>All</option>
+                {Object.keys(c.knownAbilities || {}).sort().map(a => <option key={a}>{a}</option>)}
+              </select>
+            </div>
             <div className="flex flex-col gap-1">
-              {knownAbilityEntries.map((e, i) => {
-                const equipped = (c.equippedAbilityList || []).some(x => x.name === e.name && x.aff === e.aff);
-                const color = e.isSub ? SUB_COLOR[e.aff] : AFFS[e.aff]?.color;
-                return (
-                  <div key={i} className="bg-slate-900 px-2 py-1 rounded flex justify-between items-center">
-                    <span>
-                      <strong style={{ color }}>{e.name}</strong>{' '}
-                      <span className="text-xs text-slate-400">({e.aff} lv{e.lvl} · {e.d}dmg · {e.m}mp · {abilityTypeLabel(e.k)})</span>
-                    </span>
-                    <button onClick={() => toggleAbility(e)}
-                      className={`rounded px-2 py-0.5 text-xs ${equipped ? 'bg-slate-700 text-slate-400' : 'bg-green-700 hover:bg-green-600'}`}>
-                      {equipped ? 'Equipped' : 'Equip'}
-                    </button>
-                  </div>
-                );
-              })}
-              {knownAbilityEntries.length === 0 && <div className="text-slate-500 text-xs italic">No abilities learned yet.</div>}
+              {(() => {
+                // Filter by affinity and group with section headers so even KISHEL_DEV's
+                // ~160 abilities are findable. Items render inside the modal's scroll.
+                const filtered = loadoutAffFilter === 'All'
+                  ? knownAbilityEntries
+                  : knownAbilityEntries.filter(e => e.aff === loadoutAffFilter);
+                const groups = {};
+                for (const e of filtered) (groups[e.aff] = groups[e.aff] || []).push(e);
+                const out = [];
+                let key = 0;
+                for (const aff of Object.keys(groups).sort()) {
+                  const headColor = AFFS[aff]?.color || SUB_COLOR[aff] || '#bdbdbd';
+                  out.push(<div key={'h'+key++} className="text-xs font-bold mt-2 mb-0.5 pl-1" style={{ color: headColor }}>{aff} ({groups[aff].length})</div>);
+                  for (const e of groups[aff]) {
+                    const equipped = (c.equippedAbilityList || []).some(x => x.name === e.name && x.aff === e.aff);
+                    const color = e.isSub ? SUB_COLOR[e.aff] : AFFS[e.aff]?.color;
+                    out.push(
+                      <div key={'e'+key++} className="bg-slate-900 px-2 py-1 rounded flex justify-between items-center">
+                        <span>
+                          <strong style={{ color }}>{e.name}</strong>{' '}
+                          <span className="text-xs text-slate-400">(lv{e.lvl} · {e.d}dmg · {e.m}mp · {abilityTypeLabel(e.k)})</span>
+                        </span>
+                        <button onClick={() => toggleAbility(e)}
+                          className={`rounded px-2 py-0.5 text-xs ${equipped ? 'bg-slate-700 text-slate-400' : 'bg-green-700 hover:bg-green-600'}`}>
+                          {equipped ? 'Equipped' : 'Equip'}
+                        </button>
+                      </div>
+                    );
+                  }
+                }
+                if (!filtered.length) out.push(<div key="empty" className="text-slate-500 text-xs italic">No abilities for this filter.</div>);
+                return out;
+              })()}
             </div>
           </>
         )}
@@ -4804,9 +4884,9 @@ function KrezcentQuest() {
       const myRoll = myPower * (0.7 + rand() * 0.6);
       const oppRoll = oppPower * (0.7 + rand() * 0.6);
       if (myRoll > oppRoll) {
-        const win = Math.floor(char.coins * 0.15);
+        const win = Math.floor(char.coins * 0.20);
         char.coins += win; grantExp(opp.level * 10);
-        setMsg(`Victory vs ${opp.name}! +${win} coins (15%)`);
+        setMsg(`Victory vs ${opp.name}! +${win} coins (20%)`);
       } else {
         const loss = Math.floor(char.coins * 0.05);
         char.coins -= loss; char.hp = Math.max(1, Math.floor(char.hp / 2));
