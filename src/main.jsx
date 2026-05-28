@@ -342,6 +342,21 @@ function KrezcentQuest() {
           pr.x += pr.vx * dt; pr.y += pr.vy * dt;
         } else { if (pr.explodeRadius) explodeProjectile(pr); return false; }
       }
+      // Training dummies: player projectiles hit them (starting field, no maze).
+      if (pr.fromPlayer && w.dummies && w.dummies.length) {
+        for (const d of w.dummies) {
+          if (Math.hypot(d.x - pr.x, d.y - pr.y) < 26) {
+            if (!pr.hitSet || !pr.hitSet.has(d)) {
+              damageDummy(d, pr.dmg, pr.aff);
+              if (pr.aff === 'Fire' || pr.aff === 'Lava') dummyStatus(d, 'burn', 3);
+              if (pr.aff === 'Ice' || pr.aff === 'Water') dummyStatus(d, 'freeze', 1.5);
+              if (pr.hitSet) pr.hitSet.add(d);
+            }
+            if (pr.explodeRadius) { explodeProjectile(pr); return false; }
+            if (!pr.pierce) return false;
+          }
+        }
+      }
       if (pr.fromPlayer && w.maze) {
         for (const m of w.maze.monsters) {
           if (m.hp <= 0) continue;
@@ -394,6 +409,11 @@ function KrezcentQuest() {
           if (!w.maze.boss.defeated && w.maze.bossHp != null && Math.hypot(w.maze.bossPx - ef.x, w.maze.bossPy - ef.y) < ef.radius + 20) damageBoss(per, ef.aff);
         }
       }
+      // Player field over dummies (starting field, no maze)
+      if (ef.type === 'field' && ef.fromPlayer && !w.maze && w.dummies) {
+        ef.tickAcc = (ef.tickAcc || 0) + dt;
+        if (ef.tickAcc >= 0.3) { ef.tickAcc = 0; hitDummies(ef.x, ef.y, ef.radius, ef.dmg * 0.35, ef.aff); }
+      }
       // Boss-owned lingering fields tick damage onto the player
       if (ef.type === 'field' && !ef.fromPlayer && w.maze) {
         ef.tickAcc = (ef.tickAcc || 0) + dt;
@@ -417,6 +437,10 @@ function KrezcentQuest() {
             }
           } else if (!ef.fromPlayer) {
             if (Math.hypot(ef.x - p.x, ef.y - p.y) < ef.radius && p.invuln <= 0 && p.sky <= 0) damagePlayer(ef.dmg, ef.aff);
+          }
+          // Player AoE detonations over dummies (starting field)
+          if (ef.fromPlayer && !w.maze && w.dummies && ef.dmg > 0) {
+            hitDummies(ef.x, ef.y, ef.radius, ef.dmg, ef.aff);
           }
         }
       }
@@ -504,6 +528,14 @@ function KrezcentQuest() {
 
     w.floats = w.floats.map(f => ({ ...f, life: f.life - dt, y: f.y - dt * 30 })).filter(f => f.life > 0);
     if (w.gateCooldown) { w.gateCooldown -= dt; if (w.gateCooldown <= 0) w.gateCooldown = 0; }
+    // Training dummies: decay damage-display window, hit flash, and status timers.
+    if (w.dummies) {
+      for (const d of w.dummies) {
+        if (d.dmgTimer > 0) { d.dmgTimer -= dt; if (d.dmgTimer <= 0) d.recentDmg = 0; }
+        if (d.hitFlash > 0) d.hitFlash -= dt;
+        for (const k of Object.keys(d.statuses)) { d.statuses[k] -= dt; if (d.statuses[k] <= 0) delete d.statuses[k]; }
+      }
+    }
     if (c && (c.maxCoins == null || c.coins > c.maxCoins)) c.maxCoins = c.coins;
     updateInteractPrompt();
     checkZoneTransitions();
@@ -1078,6 +1110,33 @@ function KrezcentQuest() {
     AudioMgr.play('hit');
     if (m.hp <= 0) onMonsterDeath(m);
   }
+  // --- Training dummies (Update 11): indestructible targets in the starting field ---
+  function dummiesInRadius(cx, cy, r) {
+    const w = world.current;
+    if (!w.dummies) return [];
+    return w.dummies.filter(d => Math.hypot(d.x - cx, d.y - cy) < r);
+  }
+  function damageDummy(d, dmg, aff) {
+    const final = Math.floor(dmg);
+    if (final <= 0) return;
+    addFloat(d.x, d.y - 30, String(final), aff ? (AFFS[aff]?.color || SUB_COLOR[aff] || '#fff') : '#fff');
+    d.recentDmg += final;
+    d.dmgTimer = 1.5;       // window during which accumulated damage is shown
+    d.hitFlash = 0.12;
+    AudioMgr.play('hit');
+  }
+  // Apply a visual status marker to a dummy (mirrors monster status display).
+  function dummyStatus(d, kind, dur) {
+    if (!d) return;
+    d.statuses[kind] = Math.max(d.statuses[kind] || 0, dur);
+  }
+  // Spread an effect to any dummies in range (called from damage code paths).
+  function hitDummies(cx, cy, r, dmg, aff, status) {
+    for (const d of dummiesInRadius(cx, cy, r)) {
+      if (dmg > 0) damageDummy(d, dmg, aff);
+      if (status) dummyStatus(d, status.kind, status.dur);
+    }
+  }
   function damageBoss(dmg, aff) {
     const w = world.current;
     if (w.maze.bossShield > 0) {
@@ -1532,6 +1591,27 @@ function KrezcentQuest() {
       }
     }
 
+    // Training dummies: melee arc hits them too (starting field has no maze).
+    if (w.dummies && w.dummies.length) {
+      const inArc = (tx, ty) => {
+        const md = Math.hypot(tx - p.x, ty - p.y);
+        if (md > wpn.range) return false;
+        if (isWhirl) return true;
+        const a = Math.atan2(ty - p.y, tx - p.x);
+        let da = Math.abs(a - ang); if (da > Math.PI) da = 2 * Math.PI - da;
+        if (mech === 'lash') return da < 0.32;
+        return da < arcR;
+      };
+      for (const d of w.dummies) {
+        if (!inArc(d.x, d.y)) continue;
+        for (let h = 0; h < hits; h++) damageDummy(d, dmg, null);
+        if (mech === 'burn') dummyStatus(d, 'burn', 4);
+        if (mech === 'bleed' || mech === 'crit_bleed') dummyStatus(d, 'bleed', 3);
+        if (mech === 'freeze') dummyStatus(d, 'freeze', 1.2);
+        if (mech === 'stun') dummyStatus(d, 'stun', 1);
+      }
+    }
+
     w.effects.push({ x: p.x, y: p.y, type: 'slash', swing: wpn.swing || 'slash', ang, range: wpn.range, arc: isWhirl ? 360 : wpn.arc, life: 0.18, color: swingColor(wpn) });
   }
   // Cooldown multiplier from active haste buffs (cooldown-reduction items).
@@ -1620,15 +1700,15 @@ function KrezcentQuest() {
       case 'regen': p.buffs.regen = 5; break;
       case 'cleanse': c.statusEffects = []; p.blind = 0; p.slow = 0; break;
       case 'focus': p.buffs.focus = 5; break;
-      case 'warcry': for (const m of monstersInRadius(p.x, p.y, 170)) { m.stun = Math.max(m.stun || 0, 2); } if (bossInRadius(p.x, p.y, 170)) applyBossStatus('stun', 2); break;
-      case 'lull': for (const m of monstersInRadius(p.x, p.y, 170)) m.slow = Math.max(m.slow || 0, 4); if (bossInRadius(p.x, p.y, 170)) applyBossStatus('slow', 4); break;
+      case 'warcry': for (const m of monstersInRadius(p.x, p.y, 170)) { m.stun = Math.max(m.stun || 0, 2); } if (bossInRadius(p.x, p.y, 170)) applyBossStatus('stun', 2); for (const d of dummiesInRadius(p.x, p.y, 170)) dummyStatus(d, 'stun', 2); break;
+      case 'lull': for (const m of monstersInRadius(p.x, p.y, 170)) m.slow = Math.max(m.slow || 0, 4); if (bossInRadius(p.x, p.y, 170)) applyBossStatus('slow', 4); for (const d of dummiesInRadius(p.x, p.y, 170)) dummyStatus(d, 'slow', 4); break;
       case 'footwork': p.buffs.footwork = 6; p.buffs.quickstep = 6; break;
       // B-grade
       case 'frenzy': p.buffs.frenzy = 5; break;
       case 'blink': p.x += Math.cos(p.dir) * 250; p.y += Math.sin(p.dir) * 250; if (collidesWall(p.x, p.y, false)) { p.x -= Math.cos(p.dir) * 250; p.y -= Math.sin(p.dir) * 250; } p.invuln = 0.3; break;
       case 'fortify': p.shield = (p.shield || 0) + 200; break;
       case 'siphon': drainNearest(0.12); break;
-      case 'quake': for (const m of monstersInRadius(p.x, p.y, 160)) m.stun = Math.max(m.stun || 0, 1.5); if (bossInRadius(p.x, p.y, 160)) applyBossStatus('stun', 1.5); w.effects.push({ x: p.x, y: p.y, type: 'aoe', life: 0.4, color: '#8d6e63', radius: 160 }); break;
+      case 'quake': for (const m of monstersInRadius(p.x, p.y, 160)) m.stun = Math.max(m.stun || 0, 1.5); if (bossInRadius(p.x, p.y, 160)) applyBossStatus('stun', 1.5); for (const d of dummiesInRadius(p.x, p.y, 160)) dummyStatus(d, 'stun', 1.5); w.effects.push({ x: p.x, y: p.y, type: 'aoe', life: 0.4, color: '#8d6e63', radius: 160 }); break;
       case 'mirror': p.buffs.mirror = 3; break;
       // A-grade
       case 'overcharge': p.buffs.overcharge = 4; break;
@@ -1639,7 +1719,7 @@ function KrezcentQuest() {
       case 'rewind': { const snap = p.rewindSnap; if (snap) { c.hp = snap.hp; c.mana = snap.mana; c.energy = snap.energy; setMsg('Rewound to 4s ago'); } else { c.hp = clamp(c.hp + c.maxHp * 0.3, 0, c.maxHp); } break; }
       case 'immortal': p.buffs.immortal = 5; break;
       case 'annihilate': w.effects.push({ x: p.x + Math.cos(p.dir) * 120, y: p.y + Math.sin(p.dir) * 120, type: 'aoe', life: 0.6, delay: 0.05, dmg: 600, aff: null, radius: 130, fromPlayer: true, color: '#ff1744' }); break;
-      case 'dominion': for (const m of monstersInRadius(p.x, p.y, 400)) { m.stun = Math.max(m.stun || 0, 5); m.slow = Math.max(m.slow || 0, 5); } if (bossInRadius(p.x, p.y, 400)) { applyBossStatus('stun', 5); applyBossStatus('slow', 5); } break;
+      case 'dominion': for (const m of monstersInRadius(p.x, p.y, 400)) { m.stun = Math.max(m.stun || 0, 5); m.slow = Math.max(m.slow || 0, 5); } if (bossInRadius(p.x, p.y, 400)) { applyBossStatus('stun', 5); applyBossStatus('slow', 5); } for (const d of dummiesInRadius(p.x, p.y, 400)) { dummyStatus(d, 'stun', 5); dummyStatus(d, 'slow', 5); } break;
       case 'ascend': c.hp = c.maxHp; c.mana = c.maxMana; p.buffs.apex = 4; p.invuln = 4; break;
     }
   }
@@ -1855,10 +1935,27 @@ function KrezcentQuest() {
   }
 
   function castChain(p, ang, dmg, aff, color) {
-    const w = world.current; if (!w.maze) return;
+    const w = world.current;
+    const hopMult = [1.0, 0.85, 0.85, 0.85, 0.85, 0.70];
+    if (!w.maze) {
+      // Starting field: chain across dummies.
+      if (w.dummies && w.dummies.length) {
+        let cx = p.x, cy = p.y; const segs = []; const used = new Set();
+        for (let hop = 0; hop < hopMult.length; hop++) {
+          let best = null, bd = (hop === 0 ? 400 : 220);
+          for (const d of w.dummies) { if (used.has(d)) continue; const dd = Math.hypot(d.x - cx, d.y - cy); if (dd < bd) { bd = dd; best = d; } }
+          if (!best) break;
+          used.add(best); segs.push([cx, cy, best.x, best.y]);
+          damageDummy(best, dmg * hopMult[hop], aff);
+          cx = best.x; cy = best.y;
+        }
+        if (!segs.length) segs.push([p.x, p.y, p.x + Math.cos(ang) * 200, p.y + Math.sin(ang) * 200]);
+        w.effects.push({ x: p.x, y: p.y, type: 'chain', life: 0.3, color, segs });
+      }
+      return;
+    }
     let cx = p.x, cy = p.y; const hitOrder = []; const used = new Set();
     // 6 hops with strong falloff retention: 100%, 85%, 85%, 85%, 85%, 70% per hop (Update 10 buff).
-    const hopMult = [1.0, 0.85, 0.85, 0.85, 0.85, 0.70];
     for (let hop = 0; hop < hopMult.length; hop++) {
       let best = null, bd = (hop === 0 ? 400 : 220);
       for (const m of w.maze.monsters) { if (m.hp <= 0 || used.has(m)) continue; const d = Math.hypot(m.x * 40 + 20 - cx, m.y * 40 + 20 - cy); if (d < bd) { bd = d; best = m; } }
@@ -1894,6 +1991,15 @@ function KrezcentQuest() {
         const a = Math.atan2(w.maze.bossPy - p.y, w.maze.bossPx - p.x);
         let da = Math.abs(a - ang); if (da > Math.PI) da = 2 * Math.PI - da;
         if (Math.hypot(w.maze.bossPx - p.x, w.maze.bossPy - p.y) < endR + 30 && da < 0.22) damageBoss(dmg, aff);
+      }
+    }
+    // Beam over dummies (starting field, no maze)
+    if (!w.maze && w.dummies) {
+      for (const d of w.dummies) {
+        if (Math.hypot(d.x - p.x, d.y - p.y) > endR + 20) continue;
+        const a = Math.atan2(d.y - p.y, d.x - p.x);
+        let da = Math.abs(a - ang); if (da > Math.PI) da = 2 * Math.PI - da;
+        if (da < 0.18) damageDummy(d, dmg, aff);
       }
     }
     w.effects.push({ x: p.x, y: p.y, type: 'beam', life: 0.25, ang, len: endR, color, fam });
@@ -2180,8 +2286,15 @@ function KrezcentQuest() {
         },
       ];
       setMsg('Welcome to the Starting Field! Walk east to the Hub.');
+      // Training dummies — indestructible practice targets (Update 11).
+      w.dummies = [
+        { x: 420, y: 250, recentDmg: 0, dmgTimer: 0, statuses: {}, hitFlash: 0, isDummy: true },
+        { x: 560, y: 250, recentDmg: 0, dmgTimer: 0, statuses: {}, hitFlash: 0, isDummy: true },
+        { x: 490, y: 620, recentDmg: 0, dmgTimer: 0, statuses: {}, hitFlash: 0, isDummy: true },
+      ];
     } else if (zone === 'hub') {
       w.maze = null;
+      w.dummies = [];
       const z = ZONES.hub;
       w.player.x = fromDir === 'fromStarting' ? 60 : (w.hubReturn ? w.hubReturn.x : z.spawn.x);
       w.player.y = fromDir === 'fromStarting' ? 690 : (w.hubReturn ? w.hubReturn.y : z.spawn.y);
@@ -2190,6 +2303,7 @@ function KrezcentQuest() {
       setMsg('The Hub Plaza. Step onto a glowing gate to enter.');
     } else if (INTERIORS[zone]) {
       w.maze = null;
+      w.dummies = [];
       const intr = INTERIORS[zone];
       // Enter at the bottom-center (by the exit pad), facing the focus.
       w.player.x = intr.w / 2;
@@ -2198,6 +2312,7 @@ function KrezcentQuest() {
       w.interior = zone;
       setMsg(`${intr.name}.`);
     } else if (zone === 'dungeon') {
+      w.dummies = [];
       w.maze = generateFloor(w.floor);
       w.maze.floor = w.floor;
       w.maze.floorEffect = floorEffect(w.floor);
@@ -2506,6 +2621,58 @@ function KrezcentQuest() {
     ctx.fillStyle = '#8d6e63';
     for (let x = 100; x < 1500; x += 30) ctx.fillRect(x - cam.x, 430 - cam.y, 24, 40);
     drawSign(ctx, 1520 - cam.x, 410 - cam.y, '→ HUB');
+    // Training dummies
+    if (world.current.dummies) {
+      for (const d of world.current.dummies) drawDummy(ctx, d.x - cam.x, d.y - cam.y, d);
+    }
+    // Helper label near the dummies
+    ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(360 - cam.x, 180 - cam.y, 250, 22);
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 12px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('⚔ Training Dummies — test your attacks', 485 - cam.x, 195 - cam.y);
+    ctx.textAlign = 'left';
+  }
+
+  function drawDummy(ctx, x, y, d) {
+    const t = performance.now() / 1000;
+    // shadow
+    ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.beginPath(); ctx.ellipse(x, y + 30, 18, 6, 0, 0, Math.PI * 2); ctx.fill();
+    // post
+    ctx.fillStyle = '#6d4c2f'; ctx.fillRect(x - 4, y, 8, 34);
+    // hit flash tint
+    const flash = d.hitFlash > 0;
+    // straw body (a round target dummy)
+    ctx.fillStyle = flash ? '#ffcdd2' : '#d8b56b';
+    ctx.beginPath(); ctx.ellipse(x, y - 8, 16, 22, 0, 0, Math.PI * 2); ctx.fill();
+    // binding ropes
+    ctx.strokeStyle = '#8d6e63'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(x - 15, y - 16); ctx.lineTo(x + 15, y - 16); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x - 15, y - 2); ctx.lineTo(x + 15, y - 2); ctx.stroke();
+    ctx.lineWidth = 1;
+    // target ring on the head
+    ctx.fillStyle = flash ? '#fff' : '#c1440e';
+    ctx.beginPath(); ctx.arc(x, y - 24, 8, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#fff8e1'; ctx.beginPath(); ctx.arc(x, y - 24, 4, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#c1440e'; ctx.beginPath(); ctx.arc(x, y - 24, 1.5, 0, Math.PI * 2); ctx.fill();
+    // accumulated-damage readout (like a mob health pop)
+    if (d.dmgTimer > 0 && d.recentDmg > 0) {
+      const txt = String(d.recentDmg);
+      ctx.font = 'bold 13px sans-serif'; ctx.textAlign = 'center';
+      const tw = ctx.measureText(txt).width + 12;
+      ctx.fillStyle = 'rgba(20,20,25,0.85)'; ctx.fillRect(x - tw / 2, y - 58, tw, 18);
+      ctx.fillStyle = '#ff5252'; ctx.fillText(txt, x, y - 45);
+      ctx.textAlign = 'left';
+    }
+    // status icons above the dummy
+    const sk = Object.keys(d.statuses);
+    if (sk.length) {
+      const colors = { burn: '#ff7043', poison: '#9ccc65', freeze: '#80deea', bleed: '#e53935', stun: '#fff176', slow: '#4fc3f7' };
+      let sx = x - (sk.length * 9) / 2;
+      for (const k of sk) {
+        ctx.fillStyle = colors[k] || '#bdbdbd';
+        ctx.beginPath(); ctx.arc(sx + 4, y - 68, 4, 0, Math.PI * 2); ctx.fill();
+        sx += 9;
+      }
+    }
   }
 
   function drawHub(ctx, W, H, cam) {
@@ -4112,6 +4279,14 @@ function KrezcentQuest() {
     const [code, setCode] = useState('');
     const [preview, setPreview] = useState(null);
     const [name, setName] = useState('');
+    // --- Multi-step wizard state (Update 11) ---
+    // step 1: appearance/name, 2: roll attributes, 3: roll affinities, 4: pick weapon
+    const [step, setStep] = useState(1);
+    const [rolledAttrs, setRolledAttrs] = useState(null);
+    const [attrSpins, setAttrSpins] = useState(0);   // rerolls used (max 3)
+    const [rolledAffs, setRolledAffs] = useState(null);
+    const [affSpins, setAffSpins] = useState(0);      // rerolls used (max 3)
+    const MAX_SPINS = 3;
     const hasCode = code && ADMIN_CODES[code];
 
     function buildAndStart() {
@@ -4145,8 +4320,9 @@ function KrezcentQuest() {
           if (affinities[k].sub && !('subExp' in affinities[k])) affinities[k].subExp = 0;
         }
       } else {
-        attrs = preview ? preview.attrs : rollCharacterAttrs();
-        affinities = preview ? preview.affinities : rollCharacterAffinities();
+        // Use the rolls the player locked in during the wizard (Update 11).
+        attrs = rolledAttrs || rollCharacterAttrs();
+        affinities = rolledAffs || rollCharacterAffinities();
       }
       const level = 1 + bonusLevel;
       const maxHp = 1000 + (level - 1) * 15;
@@ -4199,6 +4375,27 @@ function KrezcentQuest() {
       const affinities = JSON.parse(JSON.stringify(cc.affs));
       setPreview({ attrs, affinities, codeNote: cc.note });
     }
+    // --- Wizard navigation (Update 11) ---
+    function goToAttributes() {
+      if (!name.trim()) { setMsg('Enter a character name'); return; }
+      if (hasCode) { buildAndStart(); return; } // codes bypass the roll wizard
+      if (!rolledAttrs) setRolledAttrs(rollCharacterAttrs()); // initial free roll
+      setStep(2);
+    }
+    function spinAttributes() {
+      if (attrSpins >= MAX_SPINS) { setMsg('No spins left — keep these or continue'); return; }
+      setRolledAttrs(rollCharacterAttrs());
+      setAttrSpins(s => s + 1);
+    }
+    function goToAffinities() {
+      if (!rolledAffs) setRolledAffs(rollCharacterAffinities()); // initial free roll
+      setStep(3);
+    }
+    function spinAffinities() {
+      if (affSpins >= MAX_SPINS) { setMsg('No spins left — keep these or continue'); return; }
+      setRolledAffs(rollCharacterAffinities());
+      setAffSpins(s => s + 1);
+    }
     const hairOptions = ['#3b2316','#000000','#6d4c41','#f9d71c','#c1440e','#ffffff','#9c27b0','#03a9f4','#e91e63','#4caf50','#ff5722','#90a4ae','#7e57c2','#00bcd4'];
     const eyeOptions = ['#2196f3','#4caf50','#795548','#ff9800','#9c27b0','#f44336','#00bcd4','#ffc107','#e91e63','#607d8b'];
     const skinOptions = ['#f4c2a1','#deb887','#c68642','#a08060','#8d5524','#5d3924','#fadbb5','#ffe0bd','#3b2219','#e8b89b'];
@@ -4209,10 +4406,18 @@ function KrezcentQuest() {
     return (
       <div className="h-full overflow-auto p-6" style={{ background: 'radial-gradient(ellipse at center, #2d1b4e 0%, #1a0f24 70%, #000 100%)', color: 'white' }}>
         <div className="max-w-5xl mx-auto">
-          <h1 className="text-3xl font-bold mb-4">Create Your Character</h1>
+          <h1 className="text-3xl font-bold mb-1">Create Your Character</h1>
+          <div className="flex gap-2 mb-4 text-xs">
+            {['Appearance', 'Attributes', 'Affinities', 'Weapon'].map((lbl, i) => (
+              <div key={lbl} className={`px-2 py-1 rounded ${step === i + 1 ? 'bg-purple-600 text-white' : step > i + 1 ? 'bg-green-800 text-green-200' : 'bg-slate-800 text-slate-500'}`}>
+                {i + 1}. {lbl}{step > i + 1 ? ' ✓' : ''}
+              </div>
+            ))}
+          </div>
+          {step === 1 && (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div className="bg-slate-800/70 p-4 rounded border border-purple-700">
-              <h2 className="text-xl mb-3">Appearance & Loadout</h2>
+              <h2 className="text-xl mb-3">Appearance</h2>
               <div className="mb-3">
                 <label className="block text-sm text-slate-400 mb-1">Name</label>
                 <input value={name} onChange={e => setName(e.target.value)} maxLength={16}
@@ -4286,18 +4491,6 @@ function KrezcentQuest() {
                 </div>
               </div>
               <div className="mb-3">
-                <label className="block text-sm text-slate-400 mb-1">Starting Weapon</label>
-                <div className="flex flex-wrap gap-2">
-                  {STARTER_WEAPONS.map(k => (
-                    <button key={k} onClick={() => setWeapon(k)}
-                      className={`px-3 py-1 rounded ${weapon === k ? 'bg-purple-700' : 'bg-slate-700 hover:bg-slate-600'}`}>
-                      {WEAPONS[k].n}
-                    </button>
-                  ))}
-                </div>
-                <p className="text-xs text-slate-400 mt-1">{WEAPONS[weapon].style}</p>
-              </div>
-              <div className="mb-3">
                 <label className="block text-sm text-slate-400 mb-1">Code (optional)</label>
                 <input value={code} onChange={e => { setCode(e.target.value); setPreview(null); }}
                   className="w-full px-3 py-2 bg-slate-900 rounded outline-none" placeholder="Leave blank for normal roll" />
@@ -4318,12 +4511,94 @@ function KrezcentQuest() {
                 </div>
               )}
               <div className="text-xs text-slate-400 italic mb-3">
-                Attributes & affinities are randomly generated when you click Create Character. Starting HP is 1000.
+                {hasCode ? 'Code detected — clicking below creates your character directly.' : 'Next you\u2019ll roll for attributes, then affinities, then choose a weapon. Starting HP is 1000.'}
               </div>
-              <button onClick={buildAndStart}
-                className="w-full py-2 bg-green-700 hover:bg-green-600 rounded font-bold">Create Character</button>
+              <button onClick={goToAttributes}
+                className="w-full py-2 bg-green-700 hover:bg-green-600 rounded font-bold">
+                {hasCode ? 'Create Character' : 'Confirm & Continue →'}
+              </button>
             </div>
           </div>
+          )}
+
+          {step === 2 && (
+            <div className="max-w-2xl mx-auto bg-slate-800/70 p-6 rounded border border-purple-700">
+              <h2 className="text-xl mb-1">Roll Your Attributes</h2>
+              <p className="text-sm text-slate-400 mb-4">Spin to reroll your attribute set. You may spin up to {MAX_SPINS} times, then keep whatever you have. Each spin replaces the previous result. <span className="text-purple-300">Spins used: {attrSpins}/{MAX_SPINS}</span></p>
+              <div className="bg-slate-900 rounded p-4 mb-4 min-h-[140px]">
+                {(rolledAttrs || []).length === 0 && <div className="text-slate-500 italic">No attributes rolled.</div>}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {(rolledAttrs || []).map((a, i) => (
+                    <div key={i} className="flex items-center justify-between bg-slate-800 rounded px-3 py-2">
+                      <span className="font-bold">{ATTRS[a.key]?.n || a.key}</span>
+                      <span className={`font-bold ${gradeColor(a.grade)}`}>[{a.grade}]</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="text-xs text-slate-500 mt-2">{(rolledAttrs || []).length} attribute{(rolledAttrs || []).length === 1 ? '' : 's'} this roll</div>
+              </div>
+              <div className="flex gap-3">
+                <button onClick={spinAttributes} disabled={attrSpins >= MAX_SPINS}
+                  className={`flex-1 py-2 rounded font-bold ${attrSpins >= MAX_SPINS ? 'bg-slate-700 text-slate-500' : 'bg-amber-600 hover:bg-amber-500'}`}>
+                  🎲 Spin ({MAX_SPINS - attrSpins} left)
+                </button>
+                <button onClick={goToAffinities}
+                  className="flex-1 py-2 bg-green-700 hover:bg-green-600 rounded font-bold">Keep &amp; Continue →</button>
+              </div>
+              <button onClick={() => setStep(1)} className="mt-3 text-sm text-slate-400 hover:text-slate-200">← Back to appearance</button>
+            </div>
+          )}
+
+          {step === 3 && (
+            <div className="max-w-2xl mx-auto bg-slate-800/70 p-6 rounded border border-purple-700">
+              <h2 className="text-xl mb-1">Roll Your Affinities</h2>
+              <p className="text-sm text-slate-400 mb-4">Spin to reroll your affinities. You may spin up to {MAX_SPINS} times, then keep what you have. <span className="text-purple-300">Spins used: {affSpins}/{MAX_SPINS}</span></p>
+              <div className="bg-slate-900 rounded p-4 mb-4 min-h-[140px]">
+                {Object.keys(rolledAffs || {}).length === 0 && <div className="text-slate-500 italic">No affinities rolled.</div>}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {Object.entries(rolledAffs || {}).map(([aff, data]) => (
+                    <div key={aff} className="flex items-center justify-between bg-slate-800 rounded px-3 py-2">
+                      <span className="font-bold" style={{ color: AFFS[aff]?.color || '#fff' }}>{aff}</span>
+                      {data.sub && <span className="text-xs text-slate-400">+ {data.sub}</span>}
+                    </div>
+                  ))}
+                </div>
+                <div className="text-xs text-slate-500 mt-2">{Object.keys(rolledAffs || {}).length} affinit{Object.keys(rolledAffs || {}).length === 1 ? 'y' : 'ies'} this roll</div>
+              </div>
+              <div className="flex gap-3">
+                <button onClick={spinAffinities} disabled={affSpins >= MAX_SPINS}
+                  className={`flex-1 py-2 rounded font-bold ${affSpins >= MAX_SPINS ? 'bg-slate-700 text-slate-500' : 'bg-amber-600 hover:bg-amber-500'}`}>
+                  🎲 Spin ({MAX_SPINS - affSpins} left)
+                </button>
+                <button onClick={() => setStep(4)}
+                  className="flex-1 py-2 bg-green-700 hover:bg-green-600 rounded font-bold">Keep &amp; Continue →</button>
+              </div>
+              <button onClick={() => setStep(2)} className="mt-3 text-sm text-slate-400 hover:text-slate-200">← Back to attributes</button>
+            </div>
+          )}
+
+          {step === 4 && (
+            <div className="max-w-2xl mx-auto bg-slate-800/70 p-6 rounded border border-purple-700">
+              <h2 className="text-xl mb-1">Choose Your Starting Weapon</h2>
+              <p className="text-sm text-slate-400 mb-4">Pick the weapon you\u2019ll begin your journey with. You can buy and upgrade others later at the Blacksmith.</p>
+              <div className="flex justify-center mb-4">
+                <CharacterPreview hair={hair} eye={eye} skin={skin} hairstyle={hairstyle} expression={expression} outfit={outfit} clothColor={clothColor} weapon={weapon} />
+              </div>
+              <div className="grid grid-cols-2 gap-2 mb-4">
+                {STARTER_WEAPONS.map(k => (
+                  <button key={k} onClick={() => setWeapon(k)}
+                    className={`p-3 rounded text-left ${weapon === k ? 'bg-purple-700 border border-purple-300' : 'bg-slate-700 hover:bg-slate-600 border border-transparent'}`}>
+                    <div className="font-bold">{WEAPONS[k].n}</div>
+                    <div className="text-xs text-slate-300">{WEAPONS[k].style}</div>
+                    <div className="text-xs text-orange-300 mt-1">Dmg {Math.round(weaponDamageAt(k, 1))}</div>
+                  </button>
+                ))}
+              </div>
+              <button onClick={buildAndStart}
+                className="w-full py-3 bg-green-700 hover:bg-green-600 rounded font-bold text-lg">⚔ Create Character</button>
+              <button onClick={() => setStep(3)} className="mt-3 text-sm text-slate-400 hover:text-slate-200">← Back to affinities</button>
+            </div>
+          )}
         </div>
       </div>
     );
