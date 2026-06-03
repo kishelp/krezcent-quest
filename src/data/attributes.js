@@ -22,6 +22,7 @@ export const ATTRS = {
   stretch: { g: 'F', n: 'Stretch',   d: 'Regain 5% energy over 2s',          e: 0 , cd: 5 },
   pebble: { g: 'F', n: 'Pebble',    d: 'Toss a rock, 10 damage + tiny stun',e: 5 , cd: 2 },
   hop: { g: 'F', n: 'Hop',       d: 'Short forward hop, brief i-frames', e: 4 , cd: 3 },
+  bobble: { g: 'F', n: 'Bobble',    d: 'Wobble that gives 1s of -50% incoming damage', e: 3, cd: 5 },
 
   // ---------------- E GRADE (mobility & light utility) ----------------
   trouble: { g: 'E', n: 'Trouble',   d: 'Dash left',                         e: 8 , cd: 3 },
@@ -34,6 +35,7 @@ export const ATTRS = {
   jab: { g: 'E', n: 'Jab',       d: 'Quick poke: 18 damage',             e: 9 , cd: 3 },
   smokelet: { g: 'E', n: 'Smokelet',  d: 'Brief 1s blind on nearest enemy',   e: 10 , cd: 3 },
   dartstep: { g: 'E', n: 'Dartstep',  d: 'Dash to aim + 12 damage on arrival',e: 13 , cd: 4 },
+  feather_step: { g: 'E', n: 'Feather Step', d: '+20% speed for 3s', e: 10, cd: 5 },
 
   // ---------------- D GRADE (control begins) ----------------
   confuse: { g: 'D', n: 'Confuse',   d: 'Stun target 3s',                    e: 15 , cd: 5 },
@@ -46,6 +48,7 @@ export const ATTRS = {
   parry: { g: 'D', n: 'Parry',     d: 'Block + reflect next melee hit',    e: 16 , cd: 8 },
   bashlet: { g: 'D', n: 'Bashlet',   d: 'Shove nearest enemy back + 20 dmg', e: 15 , cd: 5 },
   ironskin: { g: 'D', n: 'Iron Skin', d: '-25% damage taken for 4s',          e: 18 , cd: 9 },
+  stoneskin: { g: 'D', n: 'Stoneskin', d: 'Gain a 50 HP shield', e: 15, cd: 7 },
 
   // ---------------- C GRADE (sustain & buffs) ----------------
   heal: { g: 'C', n: 'Heal',      d: 'Restore 15% max HP',                e: 20 , cd: 10 },
@@ -58,6 +61,7 @@ export const ATTRS = {
   warcry: { g: 'C', n: 'War Cry',   d: 'Fear all nearby enemies 2s',        e: 26 , cd: 12 },
   lull: { g: 'C', n: 'Lull',      d: 'Slow all nearby enemies 40% for 4s',e: 23 , cd: 8 },
   footwork: { g: 'C', n: 'Footwork',  d: '+15% speed + 0.4s i-frame dashes 6s',e: 21 , cd: 8 },
+  parry: { g: 'C', n: 'Parry',      d: 'Next hit grants 1.5s invuln + reflects 50%', e: 20, cd: 10 },
 
   // ---------------- B GRADE (strong utility) ----------------
   dust: { g: 'B', n: 'Dust',      d: 'Blind target 4s',                   e: 22 , cd: 10 },
@@ -70,6 +74,7 @@ export const ATTRS = {
   siphon: { g: 'B', n: 'Siphon',    d: 'Drain 12% of nearest enemy HP',     e: 26 , cd: 9 },
   quake: { g: 'B', n: 'Quake',     d: 'Stun all nearby enemies 1.5s',      e: 30 , cd: 12 },
   mirror: { g: 'B', n: 'Mirror',    d: 'Reflect projectiles for 3s',        e: 28 , cd: 14 },
+  spirit_ward: { g: 'B', n: 'Spirit Ward', d: '4s of immunity to all boss/monster status effects', e: 26, cd: 14 },
 
   // ---------------- A GRADE (powerful) ----------------
   boost: { g: 'A', n: 'Boost',     d: '+20% damage for 3s',                e: 30 , cd: 10 },
@@ -82,6 +87,7 @@ export const ATTRS = {
   vanish: { g: 'A', n: 'Vanish',    d: 'Invisible & untargetable 3s',       e: 34 , cd: 18 },
   bulwark: { g: 'A', n: 'Bulwark',   d: '-60% damage taken for 4s',          e: 36 , cd: 16 },
   execute: { g: 'A', n: 'Execute',   d: 'Kill target below 25% HP',          e: 40 , cd: 14 },
+  phase_dash: { g: 'A', n: 'Phase Dash', d: 'Long 180px invulnerable dash', e: 35, cd: 8 },
 
   // ---------------- S GRADE (ultimate) ----------------
   control: { g: 'S', n: 'Control',   d: 'Take over an enemy 4s',             e: 50 , cd: 18 },
@@ -94,6 +100,7 @@ export const ATTRS = {
   annihilate: { g: 'S', n: 'Annihilate',d: 'Massive 600 blast at aim',          e: 65 , cd: 35 },
   dominion: { g: 'S', n: 'Dominion',  d: 'Stun + 50% slow ALL enemies 5s',    e: 65 , cd: 30 },
   ascend: { g: 'S', n: 'Ascend',    d: 'Full heal + invuln + 2x dmg 4s',    e: 70 , cd: 60 },
+  ancestor_call: { g: 'S', n: 'Ancestor Call', d: '6s: full heal, invuln, +50% dmg, +50% speed, -50% cooldowns', e: 70, cd: 60 },
 };
 
 // Auto-built lookup by grade.

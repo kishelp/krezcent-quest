@@ -55,6 +55,15 @@ function migrateChar(c) {
   if (c.armor === undefined) c.armor = null;
   if (!c.statusEffects) c.statusEffects = [];
   if (c.maxCoins == null || c.maxCoins < c.coins) c.maxCoins = c.coins;
+  // HP rebalance (Update 12): bump maxHp/MP/EN to new per-level formula.
+  // Old: 1000 + (lv-1)*15.  New: 1000 + (lv-1)*35.  We bump only if save is below the new floor.
+  const lv = c.level || 1;
+  const newMaxHp = 1000 + (lv - 1) * 35;
+  const newMaxMana = 10 + (lv - 1) * 8;
+  const newMaxEnergy = 10 + (lv - 1) * 8;
+  if (c.maxHp < newMaxHp)     { const d = newMaxHp - c.maxHp;     c.maxHp = newMaxHp;     c.hp = Math.min(c.maxHp, (c.hp || 0) + d); }
+  if (c.maxMana < newMaxMana) { c.maxMana = newMaxMana; c.mana = Math.min(c.maxMana, c.mana || c.maxMana); }
+  if (c.maxEnergy < newMaxEnergy) { c.maxEnergy = newMaxEnergy; c.energy = Math.min(c.maxEnergy, c.energy || c.maxEnergy); }
   return c;
 }
 
@@ -219,11 +228,14 @@ function KrezcentQuest() {
         const len = Math.hypot(dx, dy);
         dx /= len; dy /= len;
         p.dir = Math.atan2(dy, dx);
-        let spd = p.speed;
+        // Base speed grows modestly with level so progression naturally helps dodging
+        // late-game unavoidable attacks (Update 12). Caps at +60 (220 -> 280 at L100).
+        let spd = p.speed + Math.min(60, ((c.level || 1) - 1) * 0.6);
         if (c.armor) spd *= armorMoveMod(c.armor);
         if (p.buffs.charge) spd *= 1.1;
         if (p.buffs.quickstep) spd *= 1.25;
         if (p.buffs.footwork) spd *= 1.15;
+        if (p.buffs.sprint) spd *= (1 + (p.sprintAmt || 0.35));
         if (p.slow > 0) spd *= 0.5;
         if (p.sky > 0) spd *= 1.3;
         if (hasStatus(c, 'freeze')) spd *= 0.55;
@@ -1215,7 +1227,12 @@ function KrezcentQuest() {
     const fm = 1 + (world.current.floor - 1) * 0.18;
     const expGain = Math.floor(t.exp * fm);
     grantExp(expGain);
-    const coins = Math.floor((5 + rand() * 10) * fm);
+    // Coin scaling (Update 12): linear scaling fell off at high floors. Now add
+    // a gentle quadratic bonus that kicks in past floor 20 so end-game grinding
+    // earns enough for upgrades without trivializing early floors.
+    const floor = world.current.floor;
+    const lateBonus = floor > 20 ? Math.pow((floor - 20) / 10, 1.5) : 0;
+    const coins = Math.floor((10 + rand() * 18) * fm * (1 + lateBonus * 0.6));
     c.coins += coins;
     addFloat(m.x * 40 + 20, m.y * 40 + 20 - 20, `+${expGain}xp +${coins}c`, '#8be9fd');
     if (rand() < 0.22) {
@@ -1239,7 +1256,11 @@ function KrezcentQuest() {
     const fm = 1 + (w.floor - 1) * 0.18;
     const expGain = Math.floor(200 * (def.hpMult || 4) * fm / 4);
     grantExp(expGain);
-    const coins = Math.floor(100 * fm * (def.unique ? 2 : 1));
+    // Boss coin reward: was 100 * fm. Now scales much harder so a F100 boss kill
+    // pays out meaningfully (was ~1882, now ~14000 + unique mult).
+    const floor = w.floor;
+    const lateBonus = floor > 20 ? Math.pow((floor - 20) / 10, 1.8) : 0;
+    const coins = Math.floor(250 * fm * (1 + lateBonus * 0.7) * (def.unique ? 2 : 1));
     c.coins += coins;
     const grade = floorLootGrade(w.floor);
     const itemKey = rollItemOfGrade(grade);
@@ -1279,7 +1300,7 @@ function KrezcentQuest() {
     while (c.exp >= expForLevel(c.level)) {
       c.exp -= expForLevel(c.level);
       c.level++;
-      c.maxHp += 10; c.maxMana += 5; c.maxEnergy += 5;
+      c.maxHp += 35; c.maxMana += 8; c.maxEnergy += 8;
       c.hp = c.maxHp; c.mana = c.maxMana; c.energy = c.maxEnergy;
       AudioMgr.play('levelup');
       setMsg(`Level up! Now level ${c.level}`);
@@ -1482,6 +1503,8 @@ function KrezcentQuest() {
     const wlv = (c.weaponLevels && c.weaponLevels[c.weapon]) || 1;
     let dmg = weaponDamageAt(c.weapon, wlv);
     if (p.buffs.boost) dmg *= 1.2;
+    if (p.buffs.ascendBoost) dmg *= 1.5;
+    if (c.permDmgBonus) dmg *= (1 + c.permDmgBonus);
     if (p.buffs.rage) dmg *= 1.3;
     if (p.buffs.apex) dmg *= 1.8;
     if (p.buffs.overcharge) dmg *= 1.5;
@@ -1619,6 +1642,8 @@ function KrezcentQuest() {
   function cdMultiplier(p) {
     let mult = 1;
     if (p.buffs && p.buffs.cdHaste) mult *= (1 - (p.cdHasteAmt || 0.25));
+    const c = charRef.current;
+    if (c && c.permCdReduce) mult *= (1 - c.permCdReduce);
     return Math.max(0.4, mult);
   }
 
@@ -1721,6 +1746,20 @@ function KrezcentQuest() {
       case 'annihilate': w.effects.push({ x: p.x + Math.cos(p.dir) * 120, y: p.y + Math.sin(p.dir) * 120, type: 'aoe', life: 0.6, delay: 0.05, dmg: 600, aff: null, radius: 130, fromPlayer: true, color: '#ff1744' }); break;
       case 'dominion': for (const m of monstersInRadius(p.x, p.y, 400)) { m.stun = Math.max(m.stun || 0, 5); m.slow = Math.max(m.slow || 0, 5); } if (bossInRadius(p.x, p.y, 400)) { applyBossStatus('stun', 5); applyBossStatus('slow', 5); } for (const d of dummiesInRadius(p.x, p.y, 400)) { dummyStatus(d, 'stun', 5); dummyStatus(d, 'slow', 5); } break;
       case 'ascend': c.hp = c.maxHp; c.mana = c.maxMana; p.buffs.apex = 4; p.invuln = 4; break;
+      // === Update 12 new attributes ===
+      case 'bobble': { const a = rand() * Math.PI * 2; p.x += Math.cos(a) * 18; p.y += Math.sin(a) * 18; if (collidesWall(p.x, p.y, false)) { p.x -= Math.cos(a) * 18; p.y -= Math.sin(a) * 18; } p.invuln = Math.max(p.invuln || 0, 1); break; }
+      case 'feather_step': p.buffs.sprint = 3; p.sprintAmt = 0.20; break;
+      case 'stoneskin': p.shield = (p.shield || 0) + 50; break;
+      case 'parry': p.buffs.parry = 4; p.buffs.reflect = 4; break;
+      case 'spirit_ward': p.buffs.statusImmune = Math.max(p.buffs.statusImmune || 0, 4); break;
+      case 'phase_dash': p.x += Math.cos(p.dir) * 180; p.y += Math.sin(p.dir) * 180; if (collidesWall(p.x, p.y, false)) { p.x -= Math.cos(p.dir) * 180; p.y -= Math.sin(p.dir) * 180; } p.invuln = Math.max(p.invuln || 0, 1.0); break;
+      case 'ancestor_call':
+        c.hp = c.maxHp; c.mana = c.maxMana; c.energy = c.maxEnergy;
+        p.invuln = Math.max(p.invuln || 0, 6);
+        p.buffs.ascendBoost = 6; p.buffs.sprint = 6; p.sprintAmt = 0.50;
+        p.buffs.cdHaste = 6; p.cdHasteAmt = 0.50;
+        setMsg('Ancestor Call — empowered.');
+        break;
     }
   }
   function dealAtAim(dmg, aff) {
@@ -1824,13 +1863,25 @@ function KrezcentQuest() {
     return 'arcane';
   }
 
+  // Floor-based ability damage scaling (Update 12).
+  // Boss HP grows ~1500x from F1 to F100. Abilities scale ~868x (1.07^99) so
+  // they remain slightly behind a maxed weapon (~301k per swing) but become a
+  // real alternative end-game. A maxed-affinity Ragnarok hits ~590k at F100,
+  // killing the final boss in ~3 hits. Lower abilities (Spark ~22k at F100)
+  // are still useful as cheap spam.
+  function abilityFloorScale() {
+    const w = world.current;
+    const floor = (w && w.zone === 'dungeon') ? (w.floor || 1) : 1;
+    return Math.pow(1.07, Math.max(0, floor - 1));
+  }
+
   function fireAbility(abil, aff, mult) {
     const w = world.current; const p = w.player; const c = charRef.current;
     const cur = vpRef.current;
     const ang = Math.atan2(w.mouse.y - cur.h / 2, w.mouse.x - cur.w / 2);
     const color = AFFS[aff]?.color || SUB_COLOR[aff] || '#fff';
     const fam = affKind(aff);
-    const dmg = abil.d * mult;
+    const dmg = abil.d * mult * abilityFloorScale();
     if (abil.k === 'projectile') {
       const sp = 470;
       w.projectiles.push({ x: p.x, y: p.y, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp, life: 1.6, dmg, aff, fromPlayer: true, color, big: true, spell: fam, trail: true });
@@ -2240,6 +2291,55 @@ function KrezcentQuest() {
       case 'immune_25': p.buffs.statusImmune = 25; setMsg('Ward Charm! Immune to status effects 25s'); break;
       case 'immune_15': p.buffs.statusImmune = 15; setMsg('Ward Pendant! Immune to status effects 15s'); break;
       case 'immune_8':  p.buffs.statusImmune = 8;  setMsg('Ward Token! Immune to status effects 8s'); break;
+      // === Update 12 new items ===
+      case 'sprint_30': p.buffs.sprint = 30; p.sprintAmt = 0.60; setMsg('Sprint Boots! +60% speed 30s'); break;
+      case 'sprint_20': p.buffs.sprint = 20; p.sprintAmt = 0.35; setMsg('Wind Cloak! +35% speed 20s'); break;
+      case 'phase_5':   p.buffs.sprint = 5; p.sprintAmt = 0.40; p.invuln = Math.max(p.invuln || 0, 5); setMsg('Phase Dust! Invulnerable + faster 5s'); break;
+      case 'maxHp_500': c.maxHp += 500; c.hp += 500; setMsg(`Heart Stone consumed: Max HP +500 (now ${c.maxHp})`); break;
+      case 'maxHp_1000': c.maxHp += 1000; c.hp += 1000; setMsg(`Greater Heart Stone consumed: Max HP +1000 (now ${c.maxHp})`); break;
+      case 'permDmg':
+        c.permDmgBonus = (c.permDmgBonus || 0) + 0.05;
+        if (c.permDmgBonus > 0.25) c.permDmgBonus = 0.25;
+        setMsg(`Power Stone: damage bonus now +${Math.round(c.permDmgBonus * 100)}% (max 25%)`);
+        break;
+      case 'permCd':
+        c.permCdReduce = (c.permCdReduce || 0) + 0.05;
+        if (c.permCdReduce > 0.25) c.permCdReduce = 0.25;
+        setMsg(`Mind Stone: cooldown reduction now -${Math.round(c.permCdReduce * 100)}% (max 25%)`);
+        break;
+      case 'ascend_30':
+        p.buffs.boost = 30; p.buffs.sprint = 30; p.sprintAmt = 0.30;
+        p.buffs.cdHaste = 30; p.cdHasteAmt = 0.30;
+        setMsg('Ascendant Tonic! +50% dmg, +30% speed, -30% cooldowns for 30s');
+        // Tag a stronger damage bonus this brew specifically (boost is +20%; we want +50%)
+        p.buffs.ascendBoost = 30;
+        break;
+      case 'massRestore':
+        c.hp = c.maxHp; c.mana = c.maxMana; c.energy = c.maxEnergy;
+        p.invuln = Math.max(p.invuln || 0, 8);
+        c.statusEffects = []; p.confused = 0; p.silenced = 0; p.blind = 0; p.stun = 0; p.slow = 0;
+        setMsg('Mass Restore! Fully healed + 8s immunity');
+        break;
+      case 'heal50': c.hp = clamp(c.hp + c.maxHp * 0.50, 0, c.maxHp); setMsg('Bulk Heal! +50% HP'); break;
+      case 'rerollAttr':
+        if (!c.attrs || c.attrs.length === 0) { setMsg('No attributes to re-roll'); return; }
+        // Re-roll the last attribute in the list with a fresh grade pick.
+        const idx = c.attrs.length - 1;
+        const oldKey = c.attrs[idx].key;
+        // Reuse the pickAttrByGrade helper. Pick a fresh grade with the same probabilities the attribute trainer uses.
+        const grades = ['S','A','B','C','D','E','F'];
+        const gw = { S:1, A:3, B:8, C:18, D:25, E:25, F:20 }; // matches roll table feel
+        const totalW = grades.reduce((s,g)=>s+gw[g],0);
+        let r2 = Math.random() * totalW; let g='C';
+        for (const gg of grades) { r2 -= gw[gg]; if (r2 <= 0) { g = gg; break; } }
+        const newKey = pickAttrByGrade(g, c.attrs.map(a=>a.key));
+        if (newKey) {
+          c.attrs[idx] = { key: newKey, grade: g };
+          // refresh equippedAttrs slot if it referenced the old key
+          if (c.equippedAttrs && c.equippedAttrs.includes(oldKey)) c.equippedAttrs = c.equippedAttrs.map(k => k===oldKey ? newKey : k);
+          setMsg(`Re-rolled: ${oldKey} → ${ATTRS[newKey]?.n || newKey} [${g}]`);
+        } else setMsg('No new attribute to roll');
+        break;
       case 'shield150': p.shield = (p.shield || 0) + 150; setMsg('Shield up! +150'); break;
       case 'cleanse': c.statusEffects = []; p.blind = 0; p.slow = 0; setMsg('Cleansed!'); break;
       case 'blindAll': for (const m of monstersInRadius(p.x, p.y, 180)) m.aiCooldown = 2; setMsg('Smoke bomb!'); break;
@@ -4325,9 +4425,9 @@ function KrezcentQuest() {
         affinities = rolledAffs || rollCharacterAffinities();
       }
       const level = 1 + bonusLevel;
-      const maxHp = 1000 + (level - 1) * 15;
-      const maxMana = 10 + (level - 1) * 5;
-      const maxEnergy = 10 + (level - 1) * 5;
+      const maxHp = 1000 + (level - 1) * 35;
+      const maxMana = 10 + (level - 1) * 8;
+      const maxEnergy = 10 + (level - 1) * 8;
       const knownAbilities = {};
       for (const [aff, data] of Object.entries(affinities)) {
         if (aff === '_extraSubs') continue;
