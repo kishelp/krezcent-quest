@@ -770,10 +770,14 @@ function KrezcentQuest() {
   function initBoss(w) {
     const def = bossForFloor(w.floor);
     const fm = 1 + (w.floor - 1) * 0.18;
-    const baseHp = 250 * (def.hpMult || 4);
+    // Update 14 boss balance: base HP 250 → 400 (+60%) so fights last longer
+    // and damage 25 → 32 (+28%) so hits hurt more. The combined effect is a
+    // meaningfully harder mid-game without making late-game bosses (already
+    // capable of one-shotting at very high dmgMult) absurd.
+    const baseHp = 400 * (def.hpMult || 4);
     w.maze.bossHp = baseHp * fm;
     w.maze.bossMaxHp = w.maze.bossHp;
-    w.maze.bossDmg = 25 * (def.dmgMult || 2) * fm;
+    w.maze.bossDmg = 32 * (def.dmgMult || 2) * fm;
     w.maze.bossAff = def.aff;
     w.maze.bossName = def.n;
     w.maze.bossColor = def.color;

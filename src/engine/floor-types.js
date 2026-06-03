@@ -624,13 +624,421 @@ function scatterTorches(g, density = 0.06) {
   return decs;
 }
 
+// ============================================================================
+// UPDATE 14 — 15 NEW FLOOR TYPES (broken_infinity, hollow_eye, fallen_crown,
+// spider_web, spiral_descent, fractured_star, hourglass, archipelago,
+// serpents_path, mirror_maze, sunwheel, leviathan, cracked_moon, celestial_tree,
+// mobius). Each generator carves a distinct walkable shape in the W×H grid.
+// ============================================================================
+
+// 1. The Broken Infinity — figure-8 of two circular arenas joined by a bridge.
+function genBrokenInfinity(floor) {
+  const g = emptyGrid(1);
+  const cy = Math.floor(H / 2);
+  const cxL = Math.floor(W / 4), cxR = Math.floor(W * 3 / 4);
+  const r = Math.floor(H / 2) - 2;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    if (Math.hypot(x - cxL, y - cy) <= r || Math.hypot(x - cxR, y - cy) <= r) g[y][x] = 7;
+  }
+  // Narrow center bridge — 2 tiles wide
+  for (let x = cxL; x <= cxR; x++) { g[cy][x] = 7; g[cy - 1][x] = 7; }
+  const spawn = tileCenterPx(cxL - r + 2, cy);
+  const bossX = cxR, bossY = cy;
+  const blocked = [{ x: cxL, y: cy }, { x: cxR, y: cy }];
+  const monsters = placeMonsters(g, Math.min(10 + Math.floor(floor / 3), 22), floor, blocked);
+  const chests = placeChests(g, 2, blocked);
+  return { grid: g, W, H, monsters, chests, decorations: [], hazards: [], bossX, bossY, boss: { defeated: false }, type: 'broken_infinity', intro: 'Two arenas, one bridge. Control the gap, control the fight.', spawn, fogOfWar: false };
+}
+
+// 2. The Hollow Eye — wide ring with a bottomless pit at the center.
+function genHollowEye(floor) {
+  const g = emptyGrid(1);
+  const cx = Math.floor(W / 2), cy = Math.floor(H / 2);
+  const outer = Math.min(cx, cy) - 1;
+  const inner = 5;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const d = Math.hypot(x - cx, y - cy);
+    if (d <= outer && d >= inner) g[y][x] = 7;
+  }
+  // Mark the inner pit as wall (impassable, but draws differently in the renderer).
+  // The narrow ring forces edge play.
+  const spawn = tileCenterPx(cx - outer + 2, cy);
+  const bossX = cx + outer - 3, bossY = cy;
+  const monsters = placeMonsters(g, Math.min(8 + Math.floor(floor / 3), 18), floor, [{ x: bossX, y: bossY }]);
+  const chests = placeChests(g, 2);
+  return { grid: g, W, H, monsters, chests, decorations: [], hazards: [], bossX, bossY, boss: { defeated: false }, type: 'hollow_eye', intro: 'A ring of stone around a bottomless eye. Don\u2019t fall in.', spawn, fogOfWar: false };
+}
+
+// 3. The Fallen Crown — three prongs converging on a central throne room.
+function genFallenCrown(floor) {
+  const g = emptyGrid(1);
+  const cx = Math.floor(W / 2), cy = Math.floor(H / 2);
+  // Central throne room (round)
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    if (Math.hypot(x - cx, y - cy) <= 5) g[y][x] = 7;
+  }
+  // Three prongs at -120°, -90°, -60° from center
+  const prongs = [-2 * Math.PI / 3, -Math.PI / 2, -Math.PI / 3];
+  for (const a of prongs) {
+    const len = Math.floor(H / 2) - 2;
+    for (let t = 0; t < len; t++) {
+      const px = Math.round(cx + Math.cos(a) * t), py = Math.round(cy + Math.sin(a) * t);
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const nx = px + dx, ny = py + dy;
+        if (inBounds(nx, ny)) g[ny][nx] = 7;
+      }
+    }
+  }
+  const spawn = tileCenterPx(cx, H - 3);
+  const bossX = cx, bossY = cy;
+  const monsters = placeMonsters(g, Math.min(10 + Math.floor(floor / 3), 20), floor, [{ x: bossX, y: bossY }]);
+  const chests = placeChests(g, 2);
+  return { grid: g, W, H, monsters, chests, decorations: [], hazards: [], bossX, bossY, boss: { defeated: false }, type: 'fallen_crown', intro: 'Three paths to a forgotten throne. Who will claim it?', spawn, fogOfWar: false };
+}
+
+// 4. The Spider's Web — 8 radial spokes through a central hub, joined by an outer ring.
+function genSpiderWeb(floor) {
+  const g = emptyGrid(1);
+  const cx = Math.floor(W / 2), cy = Math.floor(H / 2);
+  const outer = Math.min(cx, cy) - 1;
+  // Central hub
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    if (Math.hypot(x - cx, y - cy) <= 3) g[y][x] = 7;
+  }
+  // 8 spokes
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2;
+    for (let t = 0; t < outer; t++) {
+      const px = Math.round(cx + Math.cos(a) * t), py = Math.round(cy + Math.sin(a) * t);
+      if (inBounds(px, py)) g[py][px] = 7;
+    }
+  }
+  // Outer ring (just inside the wall)
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const d = Math.hypot(x - cx, y - cy);
+    if (d >= outer - 1 && d <= outer) g[y][x] = 7;
+  }
+  const spawn = tileCenterPx(cx, cy - outer + 2);
+  const bossX = cx, bossY = cy;
+  const monsters = placeMonsters(g, Math.min(11 + Math.floor(floor / 3), 22), floor, [{ x: bossX, y: bossY }]);
+  const chests = placeChests(g, 2);
+  return { grid: g, W, H, monsters, chests, decorations: [], hazards: [], bossX, bossY, boss: { defeated: false }, type: 'spider_web', intro: 'A web of paths. Quick rotations \u2014 and quick ambushes.', spawn, fogOfWar: false };
+}
+
+// 5. The Spiral Descent — single inward-winding spiral leading to a center boss.
+function genSpiralDescent(floor) {
+  const g = emptyGrid(1);
+  const cx = Math.floor(W / 2), cy = Math.floor(H / 2);
+  // Carve an Archimedean spiral
+  const maxR = Math.min(cx, cy) - 1;
+  for (let theta = 0; theta < Math.PI * 12; theta += 0.05) {
+    const r = maxR * (1 - theta / (Math.PI * 12));
+    if (r < 1) break;
+    const px = Math.round(cx + Math.cos(theta) * r), py = Math.round(cy + Math.sin(theta) * r);
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      const nx = px + dx, ny = py + dy;
+      if (inBounds(nx, ny)) g[ny][nx] = 7;
+    }
+  }
+  // Central plaza
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    if (Math.hypot(x - cx, y - cy) <= 3) g[y][x] = 7;
+  }
+  const spawn = tileCenterPx(cx + maxR - 2, cy);
+  const bossX = cx, bossY = cy;
+  const monsters = placeMonsters(g, Math.min(9 + Math.floor(floor / 3), 18), floor, [{ x: bossX, y: bossY }]);
+  const chests = placeChests(g, 2);
+  return { grid: g, W, H, monsters, chests, decorations: [], hazards: [], bossX, bossY, boss: { defeated: false }, type: 'spiral_descent', intro: 'A descent that twists inward. Each turn brings you closer to the center.', spawn, fogOfWar: false };
+}
+
+// 6. The Fractured Star — 5-pointed star with a central plaza.
+function genFracturedStar(floor) {
+  const g = emptyGrid(1);
+  const cx = Math.floor(W / 2), cy = Math.floor(H / 2);
+  const outer = Math.min(cx, cy) - 1;
+  const inner = outer * 0.45;
+  // 10 alternating vertices of the star (outer point, inner notch)
+  const pts = [];
+  for (let i = 0; i < 10; i++) {
+    const a = -Math.PI / 2 + i * (Math.PI / 5);
+    const r = (i % 2 === 0) ? outer : inner;
+    pts.push([cx + Math.cos(a) * r, cy + Math.sin(a) * r]);
+  }
+  // Fill the star polygon using point-in-polygon test
+  function inPoly(x, y) {
+    let inside = false;
+    for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+      const xi = pts[i][0], yi = pts[i][1], xj = pts[j][0], yj = pts[j][1];
+      if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) inside = !inside;
+    }
+    return inside;
+  }
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    if (inPoly(x, y)) g[y][x] = 7;
+  }
+  // Central plaza (always open)
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    if (Math.hypot(x - cx, y - cy) <= 3) g[y][x] = 7;
+  }
+  const spawn = tileCenterPx(cx, cy + outer - 2);
+  const bossX = cx, bossY = cy;
+  const monsters = placeMonsters(g, Math.min(10 + Math.floor(floor / 3), 20), floor, [{ x: bossX, y: bossY }]);
+  const chests = placeChests(g, 2);
+  return { grid: g, W, H, monsters, chests, decorations: [], hazards: [], bossX, bossY, boss: { defeated: false }, type: 'fractured_star', intro: 'Five points, five biomes, one center. Pick your battles.', spawn, fogOfWar: false };
+}
+
+// 7. The Hourglass Ruins — two trapezoid arenas joined by a narrow choke point.
+function genHourglass(floor) {
+  const g = emptyGrid(1);
+  const cy = Math.floor(H / 2);
+  for (let y = 0; y < H; y++) {
+    // The horizontal width tapers toward the middle row
+    const t = Math.abs(y - cy) / cy; // 0 at center, 1 at edges
+    const halfW = Math.floor(2 + t * (W / 2 - 3));
+    for (let x = Math.floor(W / 2) - halfW; x <= Math.floor(W / 2) + halfW; x++) {
+      if (inBounds(x, y) || (x > 0 && x < W - 1 && (y === 0 || y === H - 1) === false)) g[y][x] = 7;
+    }
+  }
+  // Ensure middle choke remains passable
+  g[cy][Math.floor(W / 2)] = 7;
+  const spawn = tileCenterPx(Math.floor(W / 2), 2);
+  const bossX = Math.floor(W / 2), bossY = H - 3;
+  const monsters = placeMonsters(g, Math.min(9 + Math.floor(floor / 3), 19), floor, [{ x: bossX, y: bossY }]);
+  const chests = placeChests(g, 2);
+  return { grid: g, W, H, monsters, chests, decorations: [], hazards: [], bossX, bossY, boss: { defeated: false }, type: 'hourglass', intro: 'Two ruins. One choke point. The fight is decided in the middle.', spawn, fogOfWar: false };
+}
+
+// 8. The Floating Archipelago — scattered island rooms connected by bridges.
+function genArchipelago(floor) {
+  const g = emptyGrid(1);
+  const islands = [
+    { x: 5, y: 5, r: 3 }, { x: 21, y: 5, r: 3 }, { x: 13, y: 8, r: 4 },
+    { x: 5, y: 21, r: 3 }, { x: 21, y: 21, r: 3 }, { x: 13, y: 20, r: 4 },
+    { x: 13, y: 13, r: 5 },
+  ];
+  for (const isle of islands) {
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      if (Math.hypot(x - isle.x, y - isle.y) <= isle.r) g[y][x] = 7;
+    }
+  }
+  // Bridges between nearest pairs (all islands connect to the center)
+  const center = islands[islands.length - 1];
+  for (const isle of islands.slice(0, -1)) {
+    const steps = 30;
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      const px = Math.round(isle.x + (center.x - isle.x) * t);
+      const py = Math.round(isle.y + (center.y - isle.y) * t);
+      if (inBounds(px, py)) g[py][px] = 7;
+    }
+  }
+  const spawn = tileCenterPx(islands[0].x, islands[0].y);
+  const bossX = center.x, bossY = center.y;
+  const monsters = placeMonsters(g, Math.min(10 + Math.floor(floor / 3), 20), floor, [{ x: bossX, y: bossY }]);
+  const chests = placeChests(g, 2);
+  return { grid: g, W, H, monsters, chests, decorations: [], hazards: [], bossX, bossY, boss: { defeated: false }, type: 'archipelago', intro: 'Islands suspended in the dark. The bridges are not always kind.', spawn, fogOfWar: false };
+}
+
+// 9. The Serpent's Path — winding S-curve with side pockets.
+function genSerpentsPath(floor) {
+  const g = emptyGrid(1);
+  // Sinusoidal corridor 4 tiles wide
+  for (let y = 1; y < H - 1; y++) {
+    const phase = y / (H - 2) * Math.PI * 2;
+    const cxAt = Math.floor(W / 2 + Math.sin(phase) * (W / 3));
+    for (let dx = -3; dx <= 3; dx++) {
+      const nx = cxAt + dx;
+      if (inBounds(nx, y)) g[y][nx] = 7;
+    }
+  }
+  // Hidden side pockets at certain heights
+  for (const y of [6, 13, 20]) {
+    for (let dx = -4; dx <= 4; dx++) {
+      const nx = Math.floor(W / 2) + dx;
+      if (inBounds(nx, y)) g[y][nx] = 7;
+    }
+  }
+  const spawn = tileCenterPx(Math.floor(W / 2 + Math.sin(0) * (W / 3)), 2);
+  const bossX = Math.floor(W / 2 + Math.sin(2 * Math.PI) * (W / 3)), bossY = H - 3;
+  const monsters = placeMonsters(g, Math.min(10 + Math.floor(floor / 3), 20), floor, [{ x: bossX, y: bossY }]);
+  const chests = placeChests(g, 2);
+  return { grid: g, W, H, monsters, chests, decorations: [], hazards: [], bossX, bossY, boss: { defeated: false }, type: 'serpents_path', intro: 'A winding serpent of stone. Watch for the tunnels hidden in its curves.', spawn, fogOfWar: false };
+}
+
+// 10. The Maze of Mirrors — regular grid maze with reflective decor.
+function genMirrorMaze(floor) {
+  const g = emptyGrid(1);
+  // Carve a square grid: pillars every other tile, open in between
+  for (let y = 1; y < H - 1; y++) {
+    for (let x = 1; x < W - 1; x++) {
+      if (x % 2 === 1 || y % 2 === 1) g[y][x] = 7;
+    }
+  }
+  // Randomly open extra connections to vary the maze
+  for (let i = 0; i < 30; i++) {
+    const x = 2 + Math.floor(rand() * (W - 4));
+    const y = 2 + Math.floor(rand() * (H - 4));
+    if (x % 2 === 0 && y % 2 === 0) g[y][x] = 7;
+  }
+  // Mirror "torches" mark reflective walls
+  const decorations = [];
+  for (let i = 0; i < 6; i++) {
+    const x = 2 + Math.floor(rand() * (W - 4));
+    const y = 2 + Math.floor(rand() * (H - 4));
+    if (isOpen(g, x, y)) decorations.push({ x, y, type: 'torch' });
+  }
+  const spawn = tileCenterPx(1, 1);
+  const bossX = W - 3, bossY = H - 3;
+  const monsters = placeMonsters(g, Math.min(11 + Math.floor(floor / 3), 22), floor, [{ x: bossX, y: bossY }]);
+  const chests = placeChests(g, 2);
+  return { grid: g, W, H, monsters, chests, decorations, hazards: [], bossX, bossY, boss: { defeated: false }, type: 'mirror_maze', intro: 'Reflected walls. Reflected enemies. Trust nothing you see.', spawn, fogOfWar: false };
+}
+
+// 11. The Sunwheel — central plaza ringed by an outer corridor, joined by 6 spokes.
+function genSunwheel(floor) {
+  const g = emptyGrid(1);
+  const cx = Math.floor(W / 2), cy = Math.floor(H / 2);
+  const outer = Math.min(cx, cy) - 1;
+  // Central plaza
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    if (Math.hypot(x - cx, y - cy) <= 4) g[y][x] = 7;
+  }
+  // 6 spokes
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2;
+    for (let t = 0; t < outer; t++) {
+      const px = Math.round(cx + Math.cos(a) * t), py = Math.round(cy + Math.sin(a) * t);
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const nx = px + dx, ny = py + dy;
+        if (inBounds(nx, ny)) g[ny][nx] = 7;
+      }
+    }
+  }
+  // Outer ring
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const d = Math.hypot(x - cx, y - cy);
+    if (d >= outer - 1.2 && d <= outer) g[y][x] = 7;
+  }
+  const spawn = tileCenterPx(cx, cy - outer + 2);
+  const bossX = cx, bossY = cy;
+  const monsters = placeMonsters(g, Math.min(10 + Math.floor(floor / 3), 21), floor, [{ x: bossX, y: bossY }]);
+  const chests = placeChests(g, 2);
+  return { grid: g, W, H, monsters, chests, decorations: [], hazards: [], bossX, bossY, boss: { defeated: false }, type: 'sunwheel', intro: 'A wheel of light. Run the rim or strike the heart.', spawn, fogOfWar: false };
+}
+
+// 12. The Leviathan Skeleton — a long central spine with ribs branching out.
+function genLeviathan(floor) {
+  const g = emptyGrid(1);
+  const cx = Math.floor(W / 2);
+  // Central spine corridor
+  for (let y = 1; y < H - 1; y++) {
+    for (let dx = -2; dx <= 2; dx++) {
+      const nx = cx + dx;
+      if (inBounds(nx, y)) g[y][nx] = 7;
+    }
+  }
+  // Ribs every 3 rows
+  for (let y = 3; y < H - 3; y += 3) {
+    const len = 6 + Math.floor(rand() * 3);
+    for (let t = 0; t <= len; t++) {
+      if (inBounds(cx - t, y)) g[y][cx - t] = 7;
+      if (inBounds(cx + t, y)) g[y][cx + t] = 7;
+    }
+  }
+  const spawn = tileCenterPx(cx, 2);
+  const bossX = cx, bossY = H - 3;
+  const monsters = placeMonsters(g, Math.min(10 + Math.floor(floor / 3), 20), floor, [{ x: bossX, y: bossY }]);
+  const chests = placeChests(g, 2);
+  return { grid: g, W, H, monsters, chests, decorations: [], hazards: [], bossX, bossY, boss: { defeated: false }, type: 'leviathan', intro: 'Inside the bones of something vast and long dead.', spawn, fogOfWar: false };
+}
+
+// 13. The Cracked Moon — crescent-shaped arena.
+function genCrackedMoon(floor) {
+  const g = emptyGrid(1);
+  const cx = Math.floor(W / 2), cy = Math.floor(H / 2);
+  const outer = Math.min(cx, cy) - 1;
+  // A crescent: outer disc minus an offset disc.
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const dOut = Math.hypot(x - cx, y - cy);
+    const dIn  = Math.hypot(x - (cx + 5), y - cy);
+    if (dOut <= outer && dIn > outer - 3) g[y][x] = 7;
+  }
+  const spawn = tileCenterPx(cx - outer + 2, cy);
+  const bossX = cx + outer - 3, bossY = cy;
+  const monsters = placeMonsters(g, Math.min(9 + Math.floor(floor / 3), 19), floor, [{ x: bossX, y: bossY }]);
+  const chests = placeChests(g, 2);
+  return { grid: g, W, H, monsters, chests, decorations: [], hazards: [], bossX, bossY, boss: { defeated: false }, type: 'cracked_moon', intro: 'A broken sliver of the moon. Each step echoes.', spawn, fogOfWar: false };
+}
+
+// 14. The Celestial Tree — vertical trunk with branching corridors.
+function genCelestialTree(floor) {
+  const g = emptyGrid(1);
+  const cx = Math.floor(W / 2);
+  // Trunk
+  for (let y = 1; y < H - 1; y++) {
+    for (let dx = -2; dx <= 2; dx++) {
+      const nx = cx + dx;
+      if (inBounds(nx, y)) g[y][nx] = 7;
+    }
+  }
+  // Branches at various heights
+  const branches = [
+    { y: 5,  dir: -1, len: 8 }, { y: 5,  dir: 1, len: 8 },
+    { y: 12, dir: -1, len: 10 }, { y: 12, dir: 1, len: 10 },
+    { y: 19, dir: -1, len: 7 }, { y: 19, dir: 1, len: 7 },
+  ];
+  for (const br of branches) {
+    for (let t = 0; t <= br.len; t++) {
+      const ny = br.y + Math.floor(t * 0.4) * br.dir; // slight diagonal
+      const nx = cx + t * br.dir;
+      if (inBounds(nx, br.y)) g[br.y][nx] = 7;
+      if (inBounds(nx, ny)) g[ny][nx] = 7;
+    }
+  }
+  const spawn = tileCenterPx(cx, H - 3);
+  const bossX = cx, bossY = 3;
+  const monsters = placeMonsters(g, Math.min(10 + Math.floor(floor / 3), 20), floor, [{ x: bossX, y: bossY }]);
+  const chests = placeChests(g, 2);
+  return { grid: g, W, H, monsters, chests, decorations: [], hazards: [], bossX, bossY, boss: { defeated: false }, type: 'celestial_tree', intro: 'A tree wider than continents. Climb the branches to the canopy.', spawn, fogOfWar: false };
+}
+
+// 15. The Möbius Arena — a twisted band that loops back on itself.
+function genMobius(floor) {
+  const g = emptyGrid(1);
+  const cx = Math.floor(W / 2), cy = Math.floor(H / 2);
+  // A ring with a twist: vary thickness around the loop using a sine function
+  const radius = Math.min(cx, cy) - 2;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const d = Math.hypot(x - cx, y - cy);
+    const a = Math.atan2(y - cy, x - cx);
+    const thickness = 4 + Math.sin(a * 2) * 2;
+    if (d >= radius - thickness && d <= radius) g[y][x] = 7;
+  }
+  // A connecting bridge across the center for the "twist" feel
+  for (let dx = -1; dx <= 1; dx++) for (let y = 0; y < H; y++) if (inBounds(cx + dx, y)) g[y][cx + dx] = 7;
+  const spawn = tileCenterPx(cx, cy - radius + 2);
+  const bossX = cx, bossY = cy + radius - 2;
+  const monsters = placeMonsters(g, Math.min(10 + Math.floor(floor / 3), 21), floor, [{ x: bossX, y: bossY }]);
+  const chests = placeChests(g, 2);
+  return { grid: g, W, H, monsters, chests, decorations: [], hazards: [], bossX, bossY, boss: { defeated: false }, type: 'mobius', intro: 'Reality folded. Walk far enough and you walk yourself in reverse.', spawn, fogOfWar: false };
+}
+
 // ---------- Dispatcher ----------
 // Boss arena every 10 floors. Otherwise cycle through 10 unique types by tier.
 const NON_BOSS_GENS = [
   genMaze, genCrypt, genCave, genPillarHall, genArena,
   genRiver, genMagma, genStorm, genGarden, genGauntlet,
+  // Update 14 new shapes
+  genBrokenInfinity, genHollowEye, genFallenCrown, genSpiderWeb, genSpiralDescent,
+  genFracturedStar, genHourglass, genArchipelago, genSerpentsPath, genMirrorMaze,
+  genSunwheel, genLeviathan, genCrackedMoon, genCelestialTree, genMobius,
 ];
-const NON_BOSS_NAMES = ['maze', 'crypt', 'cave', 'hall', 'arena', 'river', 'magma', 'storm', 'garden', 'gauntlet'];
+const NON_BOSS_NAMES = [
+  'maze', 'crypt', 'cave', 'hall', 'arena', 'river', 'magma', 'storm', 'garden', 'gauntlet',
+  'broken_infinity', 'hollow_eye', 'fallen_crown', 'spider_web', 'spiral_descent',
+  'fractured_star', 'hourglass', 'archipelago', 'serpents_path', 'mirror_maze',
+  'sunwheel', 'leviathan', 'cracked_moon', 'celestial_tree', 'mobius',
+];
 
 export function pickFloorType(floor) {
   if (floor % 10 === 0) return 'boss_arena';

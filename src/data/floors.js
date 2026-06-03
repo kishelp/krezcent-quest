@@ -77,12 +77,12 @@ export const FLOORS = [
         { until: 0, moves: [['blizzard_call',{}],['ring',{n:10}],['heal',{amt:40}],['slam',{r:90}]] },
       ] } } },
 
-  { n: 'The Storm Spire', palette: P('#2b2f7a','#12153f','#5b6bd6','#070920'), gen: 'arena', monsters: ['thunder_serpent','storm_wraith'], effect: 'none',
-    boss: { n: 'Tempest Warden', aff: 'Lightning', color: '#fff176', shape: 'storm_king', hpMult: 5, dmgMult: 2.2,
-      desc: 'A storm elemental who hurls wind to shove you off-balance and calls lightning.',
+  { n: 'The Storm Spire', palette: P('#2b2f7a','#12153f','#5b6bd6','#070920'), gen: 'broken_infinity', monsters: ['thunder_serpent','storm_wraith'], effect: 'none',
+    boss: { n: 'The Empty Choir', aff: 'Air', color: '#cfd8dc', shape: 'wisp_swarm', hpMult: 5, dmgMult: 2.3,
+      desc: 'Faceless singers whose harmonies physically reshape the battlefield.',
       script: { phases: [
-        { until: 0.5, moves: [['chain',{hops:3}],['bolt',{spd:340}],['quake',{r:120}]] },
-        { until: 0, moves: [['chain',{hops:5}],['ring',{n:8}],['enrage',{dmgMult:1.3,spdMult:1.3}]] },
+        { until: 0.5, moves: [['pillars',{n:4}],['waves',{n:3}],['spread',{n:6,arc:1.0}]] },
+        { until: 0, moves: [['pillars',{n:7}],['ring',{n:10}],['waves',{n:5}]] },
       ] } } },
 
   { n: 'Verdant Maw', palette: P('#2e6b2a','#13380f','#62b23a','#06180a'), gen: 'garden', monsters: ['poison_toad','spider'], effect: 'spores',
@@ -117,12 +117,13 @@ export const FLOORS = [
         { until: 0, moves: [['waves',{n:4}],['field',{r:100}],['dash',{}]] },
       ] } } },
 
-  { n: 'The Volatile Greenhouse', palette: P('#3e7d3a','#173d14','#86d65b','#08180a'), gen: 'garden', monsters: ['poison_toad','flame_imp'], effect: 'spores',
-    boss: { n: 'The Alchemother', aff: 'Poison Gas', color: '#9ccc65', shape: 'mire_hag', hpMult: 7.5, dmgMult: 2.7,
-      desc: 'A plant-beast that mixes volatile chemicals mid-fight to swap its attacks.',
+  { n: 'The Volatile Greenhouse', palette: P('#3e7d3a','#173d14','#86d65b','#08180a'), gen: 'spider_web', monsters: ['poison_toad','flame_imp'], effect: 'spores',
+    boss: { n: 'The Unfinished Story', aff: 'Light', color: '#fdd835', shape: 'light_avatar', hpMult: 7, dmgMult: 2.7,
+      desc: 'A living narrative that shifts genre mid-battle: fantasy spells, sci-fi beams, horror swarms.',
       script: { phases: [
-        { until: 0.5, moves: [['field',{r:75}],['nova',{r:110}],['spread',{n:5}]] },
-        { until: 0, moves: [['field',{r:95}],['ring',{n:10}],['cone',{}],['heal',{amt:30}]] },
+        { until: 0.6, moves: [['mirror',{}],['spread',{n:5}],['bolt',{}]] },
+        { until: 0.3, moves: [['beam',{}],['summon',{types:['shade','bat'],count:3}]] },
+        { until: 0, moves: [['ring',{n:9}],['waves',{n:4}],['enrage',{dmgMult:1.3,spdMult:1.1}]] },
       ] } } },
 
   { n: 'The Obsidian Forge', palette: P('#4a2410','#220f06','#c2531c','#100400'), gen: 'gauntlet', monsters: ['golem','lava_beast'], effect: 'lavaburn',
@@ -158,12 +159,12 @@ export const FLOORS = [
         { until: 0, moves: [['quake',{r:130}],['summon',{types:['shade'],count:3}],['ring',{n:9}]] },
       ] } } },
 
-  { n: 'The Blood Chapel', palette: P('#5a1418','#2a0608','#b8202a','#140203'), gen: 'crypt', monsters: ['blood_crab','shade'], effect: 'none',
-    boss: { n: 'Cardinal Hemorrhage', aff: 'Blood', color: '#8b0000', shape: 'blood_beast', hpMult: 12, dmgMult: 3.4,
-      desc: 'A vampire priest who drains life through the chapel floor.',
+  { n: 'The Blood Chapel', palette: P('#5a1418','#2a0608','#b8202a','#140203'), gen: 'hollow_eye', monsters: ['blood_crab','shade'], effect: 'none',
+    boss: { n: 'The Hunger Between Numbers', aff: 'Space', color: '#1a237e', shape: 'void_eye', hpMult: 12, dmgMult: 3.5,
+      desc: 'A mathematical anomaly that erases pieces of the battlefield as it attacks.',
       script: { phases: [
-        { until: 0.5, moves: [['field',{r:80}],['heal',{amt:70}],['bolt',{}]] },
-        { until: 0, moves: [['field',{r:110}],['heal',{amt:60}],['waves',{n:3}],['dash',{}]] },
+        { until: 0.5, moves: [['pull_grav',{}],['nova',{r:140}],['bolt',{}]] },
+        { until: 0, moves: [['pull_grav',{}],['ring',{n:12}],['nova',{r:170}],['teleport',{}]] },
       ] } } },
 
   { n: 'The Shadow Nursery', palette: P('#2a2540','#12101f','#4a4070','#070512'), gen: 'crypt', monsters: ['shade','bat'], effect: 'darkness',
@@ -190,12 +191,12 @@ export const FLOORS = [
         { until: 0, moves: [['weapon',{style:'spin'}],['charge',{spd:5.5}],['quake',{r:120}]] },
       ] } } },
 
-  { n: 'The Mirror Crypt', palette: P('#3a3a5a','#16162a','#6a6aa8','#070712'), gen: 'maze', monsters: ['shade','golem'], effect: 'none',
-    boss: { n: 'The Mirrorbound', aff: 'Arcane', color: '#90caf9', shape: 'void_eye', hpMult: 16, dmgMult: 3.8,
-      desc: 'A shifting entity that copies the abilities you just used.',
+  { n: 'The Mirror Crypt', palette: P('#3a3a5a','#16162a','#6a6aa8','#070712'), gen: 'mirror_maze', monsters: ['shade','golem'], effect: 'none',
+    boss: { n: 'The Bone Gardener', aff: 'Darkness', color: '#cfc8b3', shape: 'phantom_bishop', hpMult: 14, dmgMult: 3.7,
+      desc: 'Plants bone-seeds that rapidly bloom into weapons and structures.',
       script: { phases: [
-        { until: 0.5, moves: [['mirror',{}],['mirror',{}],['teleport',{}]] },
-        { until: 0, moves: [['mirror',{}],['ring',{n:9}],['mirror',{}],['nova',{r:120}]] },
+        { until: 0.5, moves: [['pillars',{n:5}],['summon',{types:['shade'],count:3}],['spread',{n:7}]] },
+        { until: 0, moves: [['pillars',{n:9}],['summon',{types:['shade','bat'],count:4}],['volley',{n:5}]] },
       ] } } },
 
   { n: 'The Candle Maze', palette: P('#5a4220','#2a1e0c','#c28a3a','#140c04'), gen: 'maze', monsters: ['flame_imp','shade'], effect: 'darkness',
@@ -232,12 +233,13 @@ export const FLOORS = [
         { until: 0, moves: [['enrage',{dmgMult:1.2,spdMult:1.3}],['beam',{width:36}],['ring',{n:10}]] },
       ] } } },
 
-  { n: 'The Reactor Core', palette: P('#4a4a10','#1f1f06','#d6d61f','#0c0c02'), gen: 'arena', monsters: ['lava_beast','golem'], effect: 'radiation',
-    boss: { n: 'Core Guardian', aff: 'Fire', color: '#ffee58', shape: 'magma_lord', hpMult: 21, dmgMult: 4.3,
-      desc: 'A mech that overloads the reactor to unleash shockwaves.',
+  { n: 'The Reactor Core', palette: P('#4a4a10','#1f1f06','#d6d61f','#0c0c02'), gen: 'spiral_descent', monsters: ['lava_beast','golem'], effect: 'radiation',
+    boss: { n: 'The Borrowed King', aff: 'Earth', color: '#bcaaa4', shape: 'iron_giant', hpMult: 16, dmgMult: 4.0,
+      desc: 'Stitched from fallen heroes. Switches fighting styles every phase.',
       script: { phases: [
-        { until: 0.5, moves: [['nova',{r:130}],['waves',{n:3}],['slam',{r:100}]] },
-        { until: 0, moves: [['waves',{n:5}],['nova',{r:160}],['pillars',{n:6}]] },
+        { until: 0.66, moves: [['dash',{}],['weapon',{style:'slash'}],['charge',{}]] },
+        { until: 0.33, moves: [['spread',{n:7}],['beam',{}],['bolt',{spd:380}]] },
+        { until: 0, moves: [['blink_strike',{}],['waves',{n:3}],['enrage',{dmgMult:1.3,spdMult:1.2}]] },
       ] } } },
 
   { n: 'The Hologram Museum', palette: P('#2a1f5a','#100a2a','#5a40c2','#06041a'), gen: 'hall', monsters: ['shade','void_walker'], effect: 'confusion',
@@ -272,12 +274,12 @@ export const FLOORS = [
         { until: 0, moves: [['volley',{n:9}],['ring',{n:12}],['slam',{r:110}]] },
       ] } } },
 
-  { n: 'The Cyber Sewers', palette: P('#1f4a2a','#0a1f10','#3ad65a','#04100a'), gen: 'river', monsters: ['poison_toad','blood_crab'], effect: 'radiation',
-    boss: { n: 'The Sludge Sovereign', aff: 'Poison Gas', color: '#76ff03', shape: 'mire_hag', hpMult: 26, dmgMult: 4.8,
-      desc: 'A corrupting blob that floods the tunnels with toxic sludge.',
+  { n: 'The Cyber Sewers', palette: P('#1f4a2a','#0a1f10','#3ad65a','#04100a'), gen: 'serpents_path', monsters: ['poison_toad','blood_crab'], effect: 'radiation',
+    boss: { n: 'The Choir of One', aff: 'Air', color: '#b39ddb', shape: 'wisp_swarm', hpMult: 18, dmgMult: 4.3,
+      desc: 'One mind split among many bodies. Strike them all before they regroup.',
       script: { phases: [
-        { until: 0.5, moves: [['field',{r:90}],['summon',{types:['poison_toad'],count:2}],['nova',{r:120}]] },
-        { until: 0, moves: [['field',{r:120}],['waves',{n:4}],['ring',{n:10}]] },
+        { until: 0.5, moves: [['ring',{n:10}],['volley',{n:5}],['slam',{r:90}]] },
+        { until: 0, moves: [['ring',{n:14}],['volley',{n:7}],['waves',{n:3}],['summon',{types:['bat','shade'],count:2}]] },
       ] } } },
 
   { n: 'The Gravity Chamber', palette: P('#2a1f4a','#100a1f','#5a4ad6','#06041a'), gen: 'arena', monsters: ['void_walker','storm_wraith'], effect: 'gravity',
@@ -321,12 +323,12 @@ export const FLOORS = [
         { until: 0, moves: [['field',{r:120}],['heal',{amt:60}],['ring',{n:12}],['blind',{dur:2,r:200}]] },
       ] } } },
 
-  { n: 'The Escher Stairwell', palette: P('#4a3a5a','#1f1624','#8a6ad6','#0c0712'), gen: 'gauntlet', monsters: ['void_walker','shade'], effect: 'gravity',
-    boss: { n: 'The Paradox Knight', aff: 'Space', color: '#b388ff', shape: 'void_eye', hpMult: 38, dmgMult: 5.5,
-      desc: 'Teleports through impossible angles to strike from nowhere.',
+  { n: 'The Escher Stairwell', palette: P('#4a3a5a','#1f1624','#8a6ad6','#0c0712'), gen: 'fractured_star', monsters: ['void_walker','shade'], effect: 'gravity',
+    boss: { n: 'The Collector of Shadows', aff: 'Darkness', color: '#1c1428', shape: 'hollow_queen', hpMult: 22, dmgMult: 4.6,
+      desc: 'Steals shadows and reshapes them into hostile copies of the fallen.',
       script: { phases: [
-        { until: 0.5, moves: [['blink_strike',{}],['teleport',{}],['weapon',{style:'thrust'}]] },
-        { until: 0, moves: [['blink_strike',{}],['ring',{n:10}],['blink_strike',{}],['nova',{r:130}]] },
+        { until: 0.5, moves: [['summon',{types:['shade'],count:3}],['teleport',{}],['charge',{}]] },
+        { until: 0, moves: [['summon',{types:['shade'],count:4}],['teleport',{}],['blink_strike',{}],['blind',{r:200,dur:3}]] },
       ] } } },
 
   { n: 'The Color Trial', palette: P('#5a2a5a','#241024','#d64ad6','#100410'), gen: 'hall', monsters: ['flame_imp','ice_wolf'], effect: 'confusion',
@@ -361,12 +363,12 @@ export const FLOORS = [
         { until: 0, moves: [['summon',{types:['shade'],count:3}],['ring',{n:11}],['blink_strike',{}]] },
       ] } } },
 
-  { n: 'The Rune Vault', palette: P('#2a3a5a','#101624','#4a6ad6','#060712'), gen: 'crypt', monsters: ['golem','shade'], effect: 'silence',
-    boss: { n: 'Runelord Arkan', aff: 'Arcane', color: '#536dfe', shape: 'void_eye', hpMult: 48, dmgMult: 6.0,
-      desc: 'Rewrites glowing runes to reshape the battlefield with traps.',
+  { n: 'The Rune Vault', palette: P('#2a3a5a','#101624','#4a6ad6','#060712'), gen: 'sunwheel', monsters: ['golem','shade'], effect: 'silence',
+    boss: { n: 'The Reflection Tyrant', aff: 'Light', color: '#fff59d', shape: 'light_avatar', hpMult: 26, dmgMult: 4.9,
+      desc: 'A ruler trapped behind mirrors. Strikes through reflections of you.',
       script: { phases: [
-        { until: 0.5, moves: [['pillars',{n:7}],['beam',{}],['ring',{n:10}]] },
-        { until: 0, moves: [['pillars',{n:10}],['beam',{width:40}],['ring',{n:14}],['quake',{r:150}]] },
+        { until: 0.5, moves: [['mirror',{}],['charge',{}],['spread',{n:7}]] },
+        { until: 0, moves: [['mirror',{}],['mirror',{}],['beam',{}],['enrage',{dmgMult:1.4,spdMult:1.2}]] },
       ] } } },
 
   { n: 'The Labyrinth of Doors', palette: P('#3a2a3a','#161016','#6a4a6a','#070407'), gen: 'maze', monsters: ['shade','goblin'], effect: 'confusion',
@@ -402,12 +404,13 @@ export const FLOORS = [
         { until: 0, moves: [['field',{r:130}],['ring',{n:12}],['heal',{amt:50}],['nova',{r:140}]] },
       ] } } },
 
-  { n: 'The Hive Nursery', palette: P('#5a4a1f','#2a230a','#d6b23a','#140f04'), gen: 'gauntlet', monsters: ['spider','bat'], effect: 'none',
-    boss: { n: 'Broodmother Hexa', aff: 'Earth', color: '#ffca28', shape: 'spider_matron', hpMult: 58, dmgMult: 6.5,
-      desc: 'A six-legged queen who floods the comb with endless larvae.',
+  { n: 'The Hive Nursery', palette: P('#5a4a1f','#2a230a','#d6b23a','#140f04'), gen: 'archipelago', monsters: ['spider','bat'], effect: 'none',
+    boss: { n: 'The Infinite Larva', aff: 'Nature', color: '#aed581', shape: 'fungal_horror', hpMult: 30, dmgMult: 5.2,
+      desc: 'Evolves throughout the fight. Each phase permanently changes its body.',
       script: { phases: [
-        { until: 0.5, moves: [['summon',{types:['spider'],count:3}],['spread',{n:6}],['dash',{}]] },
-        { until: 0, moves: [['summon',{types:['spider'],count:4}],['ring',{n:11}],['quake',{r:130}]] },
+        { until: 0.66, moves: [['dash',{}],['weapon',{style:'thrust'}],['spread',{n:6}]] },
+        { until: 0.33, moves: [['enrage',{dmgMult:1.3,spdMult:1.2}],['waves',{n:4}],['summon',{types:['spider'],count:3}]] },
+        { until: 0, moves: [['enrage',{dmgMult:1.4,spdMult:1.3}],['ring',{n:14}],['charge',{spd:7}]] },
       ] } } },
 
   { n: 'The Ribcage Hall', palette: P('#5a5448','#2a2620','#8a8270','#141208'), gen: 'hall', monsters: ['shade','golem'], effect: 'none',
@@ -434,12 +437,12 @@ export const FLOORS = [
         { until: 0, moves: [['waves',{n:5}],['field',{r:130}],['ring',{n:11}]] },
       ] } } },
 
-  { n: 'The Flesh Garden', palette: P('#5a2a3a','#2a1018','#b84a6a','#140508'), gen: 'garden', monsters: ['poison_toad','spider'], effect: 'spores',
-    boss: { n: 'The Garden Keeper', aff: 'Nature', color: '#ec407a', shape: 'world_tree', hpMult: 66, dmgMult: 6.9,
-      desc: 'A plant hybrid wielding vine whips that grab and pull.',
+  { n: 'The Flesh Garden', palette: P('#5a2a3a','#2a1018','#b84a6a','#140508'), gen: 'celestial_tree', monsters: ['poison_toad','spider'], effect: 'spores',
+    boss: { n: 'The Wishing Well', aff: 'Water', color: '#4fc3f7', shape: 'slime_king', hpMult: 34, dmgMult: 5.4,
+      desc: 'A sentient well. Each "wish" it grants twists against you.',
       script: { phases: [
-        { until: 0.5, moves: [['weapon',{style:'spin'}],['pull_grav',{}],['field',{r:90}]] },
-        { until: 0, moves: [['weapon',{style:'spin'}],['pull_grav',{}],['ring',{n:12}],['quake',{r:140}]] },
+        { until: 0.5, moves: [['heal',{amt:90}],['bolt',{}],['nova',{r:130}]] },
+        { until: 0, moves: [['heal',{amt:70}],['ring',{n:10}],['nova',{r:160}],['pillars',{n:5}]] },
       ] } } },
 
   { n: 'The Digestive Pit', palette: P('#5a3a1f','#2a170a','#b86a3a','#140a04'), gen: 'river', monsters: ['blood_crab','poison_toad'], effect: 'radiation',
@@ -483,12 +486,12 @@ export const FLOORS = [
         { until: 0, moves: [['shield',{dur:2}],['quake',{r:160}],['volley',{n:7}]] },
       ] } } },
 
-  { n: 'The Organ Vault', palette: P('#5a2a4a','#2a101f','#b84a8a','#140510'), gen: 'hall', monsters: ['blood_crab','shade'], effect: 'none',
-    boss: { n: 'The Organist', aff: 'Blood', color: '#d81b60', shape: 'blood_beast', hpMult: 82, dmgMult: 7.5,
-      desc: 'A surgeon-monster who plays organs like keys to trigger effects.',
+  { n: 'The Organ Vault', palette: P('#5a2a4a','#2a101f','#b84a8a','#140510'), gen: 'leviathan', monsters: ['blood_crab','shade'], effect: 'none',
+    boss: { n: 'The Architect of Silence', aff: 'Air', color: '#90a4ae', shape: 'dust_djinn', hpMult: 40, dmgMult: 5.8,
+      desc: 'Grows stronger as sound disappears. Silences your abilities.',
       script: { phases: [
-        { until: 0.5, moves: [['waves',{n:4}],['field',{r:100}],['volley',{n:5}]] },
-        { until: 0, moves: [['waves',{n:6}],['ring',{n:13}],['nova',{r:150}]] },
+        { until: 0.5, moves: [['blind',{dur:3,r:200}],['nova',{r:150}],['bolt',{spd:380}]] },
+        { until: 0, moves: [['blind',{dur:4,r:230}],['enrage',{dmgMult:1.5,spdMult:1.2}],['waves',{n:4}]] },
       ] } } },
 
   { n: 'The Spinal Bridge', palette: P('#4a4438','#1f1c14','#8a8268','#0c0a06'), gen: 'gauntlet', monsters: ['serpent','shade','thunder_serpent'], effect: 'none',
@@ -515,12 +518,12 @@ export const FLOORS = [
         { until: 0, moves: [['shield',{dur:2}],['heal',{amt:60}],['ring',{n:13}],['waves',{n:4}]] },
       ] } } },
 
-  { n: 'The Pulsing Cavern', palette: P('#5a2a2a','#2a1010','#b84a4a','#140505'), gen: 'cave', monsters: ['blood_crab','flame_imp'], effect: 'none',
-    boss: { n: 'The Pulse King', aff: 'Blood', color: '#ff5252', shape: 'blood_beast', hpMult: 94, dmgMult: 7.9,
-      desc: 'Controls the cavern\u2019s heartbeat to fire timed shockwaves.',
+  { n: 'The Pulsing Cavern', palette: P('#5a2a2a','#2a1010','#b84a4a','#140505'), gen: 'cracked_moon', monsters: ['blood_crab','flame_imp'], effect: 'none',
+    boss: { n: 'The Cartographer', aff: 'Earth', color: '#8d6e63', shape: 'world_tree', hpMult: 46, dmgMult: 6.1,
+      desc: 'A living map. Redraws the arena around you in real time.',
       script: { phases: [
-        { until: 0.5, moves: [['waves',{n:4}],['nova',{r:130}],['quake',{r:130}]] },
-        { until: 0, moves: [['waves',{n:6}],['nova',{r:170}],['ring',{n:13}]] },
+        { until: 0.5, moves: [['pillars',{n:6}],['slam',{r:100}],['bolt',{}]] },
+        { until: 0, moves: [['pillars',{n:9}],['slam',{r:130}],['waves',{n:4}],['summon',{types:['golem'],count:2}]] },
       ] } } },
 
   { n: 'The Rotten Hollow', palette: P('#3a4a1f','#16240a','#6a8a3a','#070f04'), gen: 'garden', monsters: ['poison_toad','ice_wolf'], effect: 'spores',
@@ -556,12 +559,12 @@ export const FLOORS = [
         { until: 0, moves: [['pillars',{n:9}],['beam',{width:40}],['waves',{n:4}],['nova',{r:150}]] },
       ] } } },
 
-  { n: 'The Void Rift', palette: P('#1a0d3a','#0a0420','#3a1f8a','#040210'), gen: 'arena', monsters: ['void_walker','abyss_eye'], effect: 'gravity',
-    boss: { n: 'The Void Maw', aff: 'Space', color: '#651fff', shape: 'void_eye', hpMult: 112, dmgMult: 8.4,
-      desc: 'A giant mouth that consumes parts of the arena into the void.',
+  { n: 'The Void Rift', palette: P('#1a0d3a','#0a0420','#3a1f8a','#040210'), gen: 'mobius', monsters: ['void_walker','abyss_eye'], effect: 'gravity',
+    boss: { n: 'The Living Eclipse', aff: 'Light', color: '#212121', shape: 'light_avatar', hpMult: 56, dmgMult: 6.5,
+      desc: 'Attacks shift based on how much light remains in the arena.',
       script: { phases: [
-        { until: 0.5, moves: [['pull_grav',{}],['cone',{arc:1.4}],['ring',{n:12}]] },
-        { until: 0, moves: [['pull_grav',{}],['nova',{r:170}],['ring',{n:15}],['beam',{width:44}]] },
+        { until: 0.5, moves: [['blind',{dur:3.5,r:240}],['waves',{n:4}],['beam',{}]] },
+        { until: 0, moves: [['blind',{dur:4,r:280}],['waves',{n:6}],['beam',{}],['nova',{r:200}]] },
       ] } } },
 
   { n: 'The Cosmic Garden', palette: P('#2a1f5a','#100a2a','#6a4ad6','#06041a'), gen: 'garden', monsters: ['star_seraph','void_walker'], effect: 'radiation',
@@ -605,11 +608,11 @@ export const FLOORS = [
       ] } } },
 
   { n: 'The Planetarium Core', palette: P('#1f2a4a','#0a101f','#3a5ad6','#04061a'), gen: 'arena', monsters: ['star_seraph','void_walker'], effect: 'gravity',
-    boss: { n: 'The Celestial Mechanic', aff: 'Space', color: '#448aff', shape: 'void_eye', hpMult: 136, dmgMult: 9.0,
-      desc: 'Controls planetary orbits, raining orbiting hazards.',
+    boss: { n: 'The Puppet of Tomorrow', aff: 'Time', color: '#fdd835', shape: 'chrono_phantom', hpMult: 66, dmgMult: 6.9,
+      desc: 'Fights alongside copies of itself drawn from the future.',
       script: { phases: [
-        { until: 0.5, moves: [['orbit_strafe',{}],['ring',{n:12}],['pull_grav',{}]] },
-        { until: 0, moves: [['orbit_strafe',{}],['ring',{n:16}],['nova',{r:160}],['pull_grav',{}]] },
+        { until: 0.5, moves: [['summon',{types:['shade'],count:2}],['spread',{n:7}],['dash',{}]] },
+        { until: 0, moves: [['summon',{types:['shade','wraith'],count:3}],['volley',{n:6}],['blink_strike',{}],['enrage',{dmgMult:1.3,spdMult:1.2}]] },
       ] } } },
 
   { n: 'The Black Hole Antechamber', palette: P('#0a0a2a','#040414','#2a2a6a','#020208'), gen: 'arena', monsters: ['abyss_eye','void_walker'], effect: 'gravity',
@@ -638,11 +641,11 @@ export const FLOORS = [
       ] } } },
 
   { n: 'The Cosmic Reef', palette: P('#1f4a4a','#0a2020','#3ad6c2','#041010'), gen: 'river', monsters: ['blood_crab','star_seraph'], effect: 'radiation',
-    boss: { n: 'Reef Monarch', aff: 'Water', color: '#1de9b6', shape: 'tide_serpent', hpMult: 156, dmgMult: 9.6,
-      desc: 'A giant cosmic crustacean amid drifting radiation pockets.',
+    boss: { n: 'The Thousand-Eyed Storm', aff: 'Air', color: '#9fa8da', shape: 'dust_djinn', hpMult: 76, dmgMult: 7.3,
+      desc: 'A sentient cloud, covered in eyes. It sees your attacks coming.',
       script: { phases: [
-        { until: 0.5, moves: [['field',{r:110}],['spread',{n:8}],['dash',{}]] },
-        { until: 0, moves: [['field',{r:140}],['ring',{n:16}],['waves',{n:4}]] },
+        { until: 0.5, moves: [['ring',{n:12}],['beam',{}],['teleport',{}]] },
+        { until: 0, moves: [['ring',{n:16}],['volley',{n:7}],['teleport',{}],['nova',{r:200}]] },
       ] } } },
 
   { n: 'The Time Fracture', palette: P('#3a3a1f','#16160a','#d6d63a','#0c0c04'), gen: 'maze', monsters: ['void_walker','shade'], effect: 'confusion',
@@ -677,12 +680,12 @@ export const FLOORS = [
         { until: 0, moves: [['teleport',{}],['blink_strike',{}],['ring',{n:16}],['nova',{r:160}]] },
       ] } } },
 
-  { n: 'The Starless Abyss', palette: P('#050510','#020208','#1a1a3a','#000004'), gen: 'maze', monsters: ['abyss_eye','void_walker'], effect: 'darkness',
-    boss: { n: 'The Nightfather', aff: 'Darkness', color: '#311b92', shape: 'void_eye', hpMult: 176, dmgMult: 10.2,
-      desc: 'A massive shadow with glowing eyes in total blackness.',
+  { n: 'The Starless Abyss', palette: P('#050510','#020208','#1a1a3a','#000004'), gen: 'fallen_crown', monsters: ['abyss_eye','void_walker'], effect: 'darkness',
+    boss: { n: 'The End of Distance', aff: 'Space', color: '#311b92', shape: 'void_eye', hpMult: 92, dmgMult: 7.7,
+      desc: 'Distorts space. Distant attacks become close, melee swings reach across the room.',
       script: { phases: [
-        { until: 0.5, moves: [['blind',{dur:3,r:240}],['ring',{n:12}],['dash',{}]] },
-        { until: 0, moves: [['blind',{dur:4,r:280}],['ring',{n:16}],['nova',{r:170}],['enrage',{dmgMult:1.4,spdMult:1.2}]] },
+        { until: 0.5, moves: [['pull_grav',{}],['beam',{}],['teleport',{}]] },
+        { until: 0, moves: [['pull_grav',{}],['blink_strike',{}],['waves',{n:5}],['ring',{n:14}]] },
       ] } } },
 
   { n: 'The Cosmic Clocktower', palette: P('#3a2a1f','#16100a','#d6a83a','#0c0804'), gen: 'gauntlet', monsters: ['void_walker','golem'], effect: 'confusion',
@@ -719,11 +722,11 @@ export const FLOORS = [
       ] } } },
 
   { n: 'The Royal Menagerie', palette: P('#4a2a1f','#1f1310','#b86a3a','#0c0804'), gen: 'arena', monsters: ['ice_wolf','spider','lava_beast'], effect: 'none',
-    boss: { n: 'The Beast King', aff: 'Earth', color: '#ff8f00', shape: 'scarab_lord', hpMult: 196, dmgMult: 11.2,
-      desc: 'Rides a chimera, releasing caged beasts into the fray.',
+    boss: { n: "The Clockmaker's Regret", aff: 'Time', color: '#cfd8dc', shape: 'chrono_phantom', hpMult: 130, dmgMult: 8.5,
+      desc: 'An unfinished mechanical god. Past attacks unpredictably repeat.',
       script: { phases: [
-        { until: 0.5, moves: [['summon',{types:['ice_wolf','spider'],count:3}],['charge',{spd:6}],['spread',{n:8}]] },
-        { until: 0, moves: [['summon',{types:['lava_beast','spider'],count:3}],['quake',{r:160}],['ring',{n:15}]] },
+        { until: 0.5, moves: [['mirror',{}],['volley',{n:6}],['teleport',{}]] },
+        { until: 0, moves: [['mirror',{}],['mirror',{}],['volley',{n:8}],['enrage',{dmgMult:1.5,spdMult:1.3}]] },
       ] } } },
 
   { n: 'The Flooded Ballroom', palette: P('#1f3a5a','#0a1824','#3a7ad6','#040c1a'), gen: 'river', monsters: ['blood_crab','thunder_serpent'], effect: 'sinking',
@@ -767,11 +770,11 @@ export const FLOORS = [
       ] } } },
 
   { n: 'The Clockwork Dungeon', palette: P('#4a3a2a','#1f1710','#8a6a3a','#0c0905'), gen: 'gauntlet', monsters: ['golem','goblin'], effect: 'none',
-    boss: { n: 'The Clockwork Emperor', aff: 'Metal', color: '#ffb300', shape: 'iron_giant', hpMult: 220, dmgMult: 12.4,
-      desc: 'Pilots a giant mech of crushing, grinding gears.',
+    boss: { n: 'The Last Dream', aff: 'Darkness', color: '#9c27b0', shape: 'hollow_queen', hpMult: 200, dmgMult: 11.0,
+      desc: 'A sleeping celestial. Summons enemies drawn from your previous encounters.',
       script: { phases: [
-        { until: 0.5, moves: [['weapon',{style:'spin'}],['pillars',{n:8}],['charge',{spd:6}]] },
-        { until: 0, moves: [['weapon',{style:'spin'}],['quake',{r:170}],['volley',{n:8}],['enrage',{dmgMult:1.3,spdMult:1.2}]] },
+        { until: 0.5, moves: [['summon',{types:['shade','bat'],count:3}],['blind',{dur:3,r:220}],['spread',{n:9}]] },
+        { until: 0, moves: [['summon',{types:['shade','golem'],count:4}],['blind',{dur:4,r:260}],['waves',{n:5}],['nova',{r:200}]] },
       ] } } },
 
   { n: 'The Mirage Desert', palette: P('#5a4a1f','#2a230a','#d6b23a','#140f04'), gen: 'hall', monsters: ['scarab_lord','shade'], effect: 'confusion',
@@ -799,12 +802,12 @@ export const FLOORS = [
         { until: 0, moves: [['weapon',{style:'chop'}],['waves',{n:6}],['pillars',{n:12}],['enrage',{dmgMult:1.4,spdMult:1.2}]] },
       ] } } },
 
-  { n: 'The Maze of Chains', palette: P('#3a3a3a','#161616','#7a7a7a','#070707'), gen: 'maze', monsters: ['golem','shade'], effect: 'darkness',
-    boss: { n: 'The Chain Warden', aff: 'Metal', color: '#bdbdbd', shape: 'iron_giant', hpMult: 240, dmgMult: 13.3,
-      desc: 'Swings massive chains that grab and reel you in.',
+  { n: 'The Maze of Chains', palette: P('#3a3a3a','#161616','#7a7a7a','#070707'), gen: 'hourglass', monsters: ['golem','shade'], effect: 'darkness',
+    boss: { n: 'The Archivist', aff: 'Light', color: '#80cbc4', shape: 'ember_specter', hpMult: 248, dmgMult: 13.4,
+      desc: 'A library given form. Rewrites the rules of combat as it attacks.',
       script: { phases: [
-        { until: 0.5, moves: [['pull_grav',{}],['weapon',{style:'spin'}],['slam',{r:120}]] },
-        { until: 0, moves: [['pull_grav',{}],['weapon',{style:'spin'}],['quake',{r:170}],['ring',{n:15}]] },
+        { until: 0.5, moves: [['mirror',{}],['beam',{}],['nova',{r:150}]] },
+        { until: 0, moves: [['mirror',{}],['mirror',{}],['ring',{n:14}],['enrage',{dmgMult:1.4,spdMult:1.2}]] },
       ] } } },
 
   { n: 'The Thunder Plains', palette: P('#2a2a5a','#10102a','#5a6ad6','#06061a'), gen: 'arena', monsters: ['thunder_serpent','storm_wraith'], effect: 'none',
@@ -840,11 +843,12 @@ export const FLOORS = [
       ] } } },
 
   { n: 'The Labyrinth of Fog', palette: P('#3a3a4a','#16161f','#6a6a8a','#070710'), gen: 'maze', monsters: ['shade','void_walker'], effect: 'darkness',
-    boss: { n: 'The Fog Reaper', aff: 'Darkness', color: '#b0bec5', shape: 'hollow_queen', hpMult: 270, dmgMult: 14.8,
-      desc: 'Appears silently behind you out of the thick fog.',
+    boss: { n: 'The Kingdom', aff: 'Earth', color: '#bf360c', shape: 'iron_giant', hpMult: 290, dmgMult: 15.5,
+      desc: 'An entire civilization fights as one. Destroying its districts weakens its abilities.',
       script: { phases: [
-        { until: 0.5, moves: [['blink_strike',{}],['blind',{dur:3,r:240}],['teleport',{}]] },
-        { until: 0, moves: [['blink_strike',{}],['ring',{n:16}],['blink_strike',{}],['nova',{r:170}]] },
+        { until: 0.66, moves: [['summon',{types:['golem'],count:3}],['spread',{n:8}],['beam',{}]] },
+        { until: 0.33, moves: [['summon',{types:['golem','knight'],count:3}],['volley',{n:7}],['slam',{r:120}]] },
+        { until: 0, moves: [['summon',{types:['golem'],count:4}],['ring',{n:14}],['enrage',{dmgMult:1.4,spdMult:1.2}],['waves',{n:5}]] },
       ] } } },
 
   { n: 'The Radiant Sanctum', palette: P('#5a5a3a','#2a2a16','#fff176','#14140a'), gen: 'hall', monsters: ['star_seraph','golem'], effect: 'none',
