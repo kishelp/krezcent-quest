@@ -127,6 +127,12 @@ function KrezcentQuest() {
     const kd = (e) => {
       const w = world.current;
       if (e.repeat) return;
+      // When the user is typing in an input/textarea, never trigger game keybinds.
+      // Fixes the delete-account flow where typing "DELETE" or a password used
+      // to open the Loadout modal on `L`, the Stats panel on `C`, etc.
+      const tgt = e.target;
+      const tn = tgt && tgt.tagName;
+      if (tn === 'INPUT' || tn === 'TEXTAREA' || (tgt && tgt.isContentEditable)) return;
       const key = e.key.toLowerCase();
       w.keys[key] = true;
       if (e.key === 'Tab') { e.preventDefault(); if (charRef.current) setModal(m => m === 'inventory' ? null : 'inventory'); return; }
@@ -237,6 +243,8 @@ function KrezcentQuest() {
         if (p.buffs.quickstep) spd *= 1.25;
         if (p.buffs.footwork) spd *= 1.15;
         if (p.buffs.sprint) spd *= (1 + (p.sprintAmt || 0.35));
+        // Update 15: Parasite Husk stacks grant +2% speed per stack
+        if (c.parasiteBuffs && c.parasiteBuffs.length) spd *= (1 + c.parasiteBuffs.length * 0.02);
         if (p.slow > 0) spd *= 0.5;
         if (p.sky > 0) spd *= 1.3;
         if (hasStatus(c, 'freeze')) spd *= 0.55;
@@ -659,6 +667,53 @@ function KrezcentQuest() {
 
     w.floats = w.floats.map(f => ({ ...f, life: f.life - dt, y: f.y - dt * 30 })).filter(f => f.life > 0);
     if (w.gateCooldown) { w.gateCooldown -= dt; if (w.gateCooldown <= 0) w.gateCooldown = 0; }
+    // === Update 15: per-frame armor effect ticks ===
+    {
+      const cc = charRef.current;
+      if (cc) {
+        const armorEff2 = cc.armor && ARMORS[cc.armor] ? ARMORS[cc.armor].effect : null;
+        // Chronolock — record state every 4s, decrement revive cooldown.
+        if (armorEff2 === 'chronolock') {
+          cc.chronoSnapTimer = (cc.chronoSnapTimer || 0) + dt;
+          if (cc.chronoSnapTimer >= 4) {
+            cc.chronoSnapTimer = 0;
+            cc.chronoSnapshot = { hp: cc.hp, mana: cc.mana, energy: cc.energy, px: w.player.x, py: w.player.y };
+          }
+          if (cc.chronoCd > 0) cc.chronoCd = Math.max(0, cc.chronoCd - dt);
+        }
+        // Gravity Ward — slow nearby enemies passively.
+        if (armorEff2 === 'gravity_ward' && w.maze) {
+          for (const m of w.maze.monsters) {
+            if (m.hp <= 0) continue;
+            if (Math.hypot(m.x * 40 + 20 - w.player.x, m.y * 40 + 20 - w.player.y) < 130) m.slow = Math.max(m.slow || 0, 1);
+          }
+        }
+        // Stormbound — accumulate charge while moving, fire chain lightning at full.
+        if (armorEff2 === 'stormbound') {
+          if (w.player.moving) cc.stormCharge = (cc.stormCharge || 0) + dt * 18;
+          if (cc.stormCharge >= 100) {
+            cc.stormCharge = 0;
+            // Cast chain lightning toward nearest monster
+            if (w.maze) {
+              let best = null, bd = 360;
+              for (const m of w.maze.monsters) { if (m.hp <= 0) continue; const d = Math.hypot(m.x * 40 + 20 - w.player.x, m.y * 40 + 20 - w.player.y); if (d < bd) { bd = d; best = m; } }
+              if (best) {
+                const a = Math.atan2(best.y * 40 + 20 - w.player.y, best.x * 40 + 20 - w.player.x);
+                castChain(w.player, a, 100 + w.floor * 8, 'Lightning', '#fff176');
+                addFloat(w.player.x, w.player.y - 40, 'CHARGED!', '#fff176');
+              }
+            }
+          }
+        }
+        // Tick down parasite_husk buff stacks (each kill adds a 6s timer).
+        if (armorEff2 === 'parasite' && cc.parasiteBuffs) {
+          for (let i = cc.parasiteBuffs.length - 1; i >= 0; i--) {
+            cc.parasiteBuffs[i] -= dt;
+            if (cc.parasiteBuffs[i] <= 0) cc.parasiteBuffs.splice(i, 1);
+          }
+        }
+      }
+    }
     // Training dummies: decay damage-display window, hit flash, and status timers.
     if (w.dummies) {
       for (const d of w.dummies) {
@@ -1289,6 +1344,16 @@ function KrezcentQuest() {
     const c = charRef.current;
     if (!c) return;
     const w = world.current; const p = w.player;
+    // === Update 15: armor effect hooks (pre-damage) ===
+    const armorKey = c.armor;
+    const armorDef = armorKey ? ARMORS[armorKey] : null;
+    const armorEff = armorDef ? armorDef.effect : null;
+    // Phaseweave Armor — 15% chance to entirely phase through the hit.
+    if (armorEff === 'phaseweave' && rand() < 0.15) {
+      addFloat(p.x, p.y - 30, 'PHASE', '#b39ddb');
+      p.invuln = Math.max(p.invuln || 0, 0.3);
+      return;
+    }
     if (p.shield > 0) {
       const absorb = Math.min(p.shield, dmg);
       p.shield -= absorb; dmg -= absorb;
@@ -1297,18 +1362,75 @@ function KrezcentQuest() {
     let mult = affinityMultiplier(aff, Object.keys(c.affinities));
     const wpn = WEAPONS[c.weapon];
     if (wpn?.defense) dmg *= (1 - wpn.defense);
-    // Equipped armor: percent damage reduction (capped low, so dodging still matters).
+    // Equipped armor: base percent damage reduction.
     if (c.armor && ARMORS[c.armor]) {
-      const red = armorReductionAt(c.armor, (c.armorLevels && c.armorLevels[c.armor]) || 1);
+      let red = armorReductionAt(c.armor, (c.armorLevels && c.armorLevels[c.armor]) || 1);
+      // Bloodforge Plate: +1% reduction per 5% missing HP, max +20%.
+      if (armorEff === 'bloodforge') {
+        const missing = 1 - (c.hp / c.maxHp);
+        red += Math.min(0.20, missing * 0.20);
+      }
+      // Abyssal Shell: below 30% HP, surge +25% reduction.
+      if (armorEff === 'abyssal' && c.hp / c.maxHp < 0.30) {
+        red = Math.min(0.95, red + 0.25);
+      }
       dmg *= (1 - red);
     }
     if (p.buffs.ironskin) dmg *= 0.75;
     if (p.buffs.bulwark) dmg *= 0.4;
     const final = Math.floor(dmg * mult);
+    // Solar Prism Mail — when charged, incoming hits heal 20% and blind enemies.
+    if (armorEff === 'solar_prism' && (c.solarCharge || 0) >= 100) {
+      c.solarCharge = 0;
+      const heal = Math.floor(final * 0.20);
+      c.hp = clamp(c.hp + heal, 0, c.maxHp);
+      addFloat(p.x, p.y - 30, '+' + heal, '#ffeb3b');
+      // Blind nearby monsters via a brief visual + status
+      w.effects.push({ x: p.x, y: p.y, type: 'aoe', life: 0.5, color: '#ffeb3b', radius: 180 });
+      if (w.maze) {
+        for (const m of w.maze.monsters) {
+          if (m.hp <= 0) continue;
+          if (Math.hypot(m.x * 40 + 20 - p.x, m.y * 40 + 20 - p.y) < 180) m.stun = Math.max(m.stun || 0, 2);
+        }
+      }
+    }
     if (p.buffs.immortal) { c.hp = Math.max(1, c.hp - final); }
     else c.hp = clamp(c.hp - final, 0, c.maxHp);
+    // Charge counters for armors that store damage.
+    if (armorEff === 'solar_prism') c.solarCharge = Math.min(100, (c.solarCharge || 0) + final * 0.5);
+    if (armorEff === 'echosteel') {
+      c.echoCharge = (c.echoCharge || 0) + final;
+      if (c.echoCharge >= 200) {
+        c.echoCharge -= 200;
+        w.effects.push({ x: p.x, y: p.y, type: 'nova', life: 0.5, delay: 0, dmg: final * 4 + 80, aff: null, radius: 160, fromPlayer: true, color: '#b0bec5', fam: 'metal' });
+        addFloat(p.x, p.y - 50, 'ECHO!', '#b0bec5');
+      }
+    }
+    if (armorEff === 'frostheart') {
+      c.frostCharge = (c.frostCharge || 0) + final;
+      if (c.frostCharge >= 300) {
+        c.frostCharge -= 300;
+        w.effects.push({ x: p.x, y: p.y, type: 'nova', life: 0.6, delay: 0, dmg: final * 3 + 60, aff: 'Ice', radius: 180, fromPlayer: true, color: '#80deea', fam: 'water' });
+        addFloat(p.x, p.y - 50, 'FROSTBURST!', '#80deea');
+        if (w.maze) {
+          for (const m of w.maze.monsters) {
+            if (m.hp <= 0) continue;
+            if (Math.hypot(m.x * 40 + 20 - p.x, m.y * 40 + 20 - p.y) < 180) m.slow = Math.max(m.slow || 0, 3);
+          }
+        }
+      }
+    }
     addFloat(p.x, p.y - 30, '-' + final, '#ff5252');
-    // thorns (spike shield): reflect a fraction of the hit back at nearby attackers
+    // Thornroot Carapace — retaliate with damage thorns when struck.
+    if (armorEff === 'thornroot' && final > 0 && w.maze) {
+      const thornDmg = 35 + final * 0.4;
+      for (const m of w.maze.monsters) {
+        if (m.hp <= 0) continue;
+        if (Math.hypot(m.x * 40 + 20 - p.x, m.y * 40 + 20 - p.y) < 110) damageMonster(m, thornDmg, null);
+      }
+      w.effects.push({ x: p.x, y: p.y, type: 'spellburst', life: 0.4, color: '#558b2f', radius: 30, fam: 'nature' });
+    }
+    // Weapon-thorns (existing spike shield mechanic)
     if (wpn?.mech === 'thorns' && final > 0 && w.maze) {
       const reflect = final * (wpn.mechVal || 0.4);
       for (const m of w.maze.monsters) {
@@ -1318,7 +1440,33 @@ function KrezcentQuest() {
     }
     AudioMgr.play('bonk');
     p.invuln = 0.4;
-    if (c.hp <= 0) onPlayerDeath();
+    if (c.hp <= 0) {
+      // === Update 15: revive armors ===
+      // Phoenixbone — once per floor, revive on fatal damage with a fire nova.
+      if (armorEff === 'phoenixbone' && !c.phoenixUsedThisFloor) {
+        c.phoenixUsedThisFloor = true;
+        c.hp = c.maxHp;
+        p.invuln = 2.5;
+        w.effects.push({ x: p.x, y: p.y, type: 'nova', life: 0.7, delay: 0, dmg: 400 * (1 + (w.floor - 1) * 0.18), aff: 'Fire', radius: 220, fromPlayer: true, color: '#ff7043', fam: 'fire' });
+        addFloat(p.x, p.y - 60, 'REBIRTH!', '#ff7043');
+        setMsg('The Phoenix burns! You are reborn.');
+        return;
+      }
+      // Chronolock — rewind to a snapshot taken every 4s; 120s cooldown.
+      if (armorEff === 'chronolock' && (c.chronoCd || 0) <= 0 && c.chronoSnapshot) {
+        c.hp = c.chronoSnapshot.hp;
+        c.mana = c.chronoSnapshot.mana;
+        c.energy = c.chronoSnapshot.energy;
+        p.x = c.chronoSnapshot.px; p.y = c.chronoSnapshot.py;
+        p.invuln = 1.5;
+        c.chronoCd = 120;
+        w.effects.push({ x: p.x, y: p.y, type: 'spellburst', life: 0.8, color: '#fdd835', radius: 40, fam: 'time' });
+        addFloat(p.x, p.y - 60, 'REWOUND!', '#fdd835');
+        setMsg('Chronolock rewinds you to safety.');
+        return;
+      }
+      onPlayerDeath();
+    }
   }
   function rollDungeonWeapon(floor) {
     const pool = DROPPABLE_WEAPONS.filter(k => (WEAPONS[k].dropMin || 1) <= floor);
@@ -1363,10 +1511,26 @@ function KrezcentQuest() {
       addItemToInventory({ key: `trophy_${grade}`, name: `${grade}-grade Monster Trophy`, grade, isTrophy: true });
     }
     if (rand() < 0.012) {
-      const weaponKey = rollDungeonWeapon(world.current.floor);
-      if (weaponKey && !c.ownedWeapons.includes(weaponKey)) {
-        c.ownedWeapons.push(weaponKey); c.weaponLevels = c.weaponLevels || {}; c.weaponLevels[weaponKey] = c.weaponLevels[weaponKey] || 1;
-        setMsg(`New weapon acquired: ${WEAPONS[weaponKey].n}! Check the Blacksmith.`);
+      // Update 15: monsters drop ARMOR at the same rate weapons used to drop.
+      // Weapons can no longer be acquired from the dungeon.
+      const armorKey = rollDungeonArmor(world.current.floor);
+      if (armorKey && grantArmor(c, armorKey)) {
+        setMsg(`New armor acquired: ${ARMORS[armorKey].n}! Check the Blacksmith.`);
+      }
+    }
+    // === Update 15: armor effect — Parasite Husk and Runesmith Exo kill triggers ===
+    const armorEffKill = c.armor && ARMORS[c.armor] ? ARMORS[c.armor].effect : null;
+    if (armorEffKill === 'parasite') {
+      c.parasiteBuffs = c.parasiteBuffs || [];
+      if (c.parasiteBuffs.length < 10) c.parasiteBuffs.push(6); // 6s timer
+    }
+    if (armorEffKill === 'runesmith') {
+      c.runesmithKills = (c.runesmithKills || 0) + 1;
+      // every 25 kills: +0.5% damage and reduction permanently, cap +25%/+15%
+      if (c.runesmithKills % 25 === 0) {
+        c.runesmithDmg = Math.min(0.25, (c.runesmithDmg || 0) + 0.005);
+        c.runesmithRed = Math.min(0.15, (c.runesmithRed || 0) + 0.003);
+        setMsg(`Runesmith adapts: +${(c.runesmithDmg * 100).toFixed(1)}% dmg, +${(c.runesmithRed * 100).toFixed(1)}% reduction`);
       }
     }
     setChar({ ...c });
@@ -1391,10 +1555,10 @@ function KrezcentQuest() {
     addItemToInventory({ key: `trophy_${grade}`, name: `${grade}-grade Boss Trophy`, grade, isTrophy: true });
     const dropChance = def.unique ? 0.6 : 0.25;
     if (rand() < dropChance) {
-      const weaponKey = rollDungeonWeapon(world.current.floor);
-      if (weaponKey && !c.ownedWeapons.includes(weaponKey)) {
-        c.ownedWeapons.push(weaponKey); c.weaponLevels = c.weaponLevels || {}; c.weaponLevels[weaponKey] = c.weaponLevels[weaponKey] || 1;
-        setMsg(`Boss dropped a weapon: ${WEAPONS[weaponKey].n}!`);
+      // Update 15: bosses drop ARMOR. Weapons can no longer be acquired in dungeons.
+      const armorKey = rollDungeonArmor(world.current.floor);
+      if (armorKey && grantArmor(c, armorKey)) {
+        setMsg(`Boss dropped armor: ${ARMORS[armorKey].n}!`);
       }
     }
     if (w.floor < 100 && w.floor + 1 > c.unlockedFloor) c.unlockedFloor = w.floor + 1;
@@ -1628,6 +1792,15 @@ function KrezcentQuest() {
     if (p.buffs.boost) dmg *= 1.2;
     if (p.buffs.ascendBoost) dmg *= 1.5;
     if (c.permDmgBonus) dmg *= (1 + c.permDmgBonus);
+    // Update 15: armor damage bonuses
+    if (c.runesmithDmg) dmg *= (1 + c.runesmithDmg);
+    if (c.parasiteBuffs && c.parasiteBuffs.length) dmg *= (1 + c.parasiteBuffs.length * 0.02);
+    // Bloodforge damage bonus mirrors its reduction bonus (+1% per 5% missing HP, max +20%)
+    const armorEffDmg = c.armor && ARMORS[c.armor] ? ARMORS[c.armor].effect : null;
+    if (armorEffDmg === 'bloodforge') {
+      const missing = 1 - (c.hp / c.maxHp);
+      dmg *= (1 + Math.min(0.20, missing * 0.20));
+    }
     if (p.buffs.rage) dmg *= 1.3;
     if (p.buffs.apex) dmg *= 1.8;
     if (p.buffs.overcharge) dmg *= 1.5;
@@ -2343,10 +2516,10 @@ function KrezcentQuest() {
       let pick3, tries = 0;
       do { pick3 = open[Math.floor(rand() * open.length)]; tries++; } while (used.has(pick3[0] + ',' + pick3[1]) && tries < 10);
       used.add(pick3[0] + ',' + pick3[1]);
-      // ~82% item, ~12% weapon, ~6% pure coins
+      // Update 15: weapons NEVER drop from dungeon loot. Armor takes the slot
+      // weapons used to occupy (~12% — same chance as weapons had).
       const r = rand();
-      // ~80% item, ~9% weapon, ~3% armor (rare), ~8% coins
-      const kind = r < 0.80 ? 'item' : (r < 0.89 ? 'weapon' : (r < 0.92 ? 'armor' : 'coins'));
+      const kind = r < 0.80 ? 'item' : (r < 0.92 ? 'armor' : 'coins');
       maze.loot.push({ x: pick3[0], y: pick3[1], kind, taken: false });
     }
   }
@@ -2356,16 +2529,9 @@ function KrezcentQuest() {
     const c = charRef.current;
     const floor = world.current.floor;
     const grade = floorLootGrade(floor);
-    if (orb.kind === 'weapon') {
-      const weaponKey = rollDungeonWeapon(floor);
-      if (weaponKey && !c.ownedWeapons.includes(weaponKey)) {
-        c.ownedWeapons.push(weaponKey); c.weaponLevels = c.weaponLevels || {}; c.weaponLevels[weaponKey] = c.weaponLevels[weaponKey] || 1;
-        setMsg(`Found a weapon: ${WEAPONS[weaponKey].n}!`);
-      } else {
-        const itemKey = rollItemOfGrade(grade);
-        if (itemKey) { addItemToInventory({ key: itemKey, name: ITEMS[itemKey].n, grade }); setMsg(`Found ${grade}-grade ${ITEMS[itemKey].n}`); }
-      }
-    } else if (orb.kind === 'armor') {
+    if (orb.kind === 'weapon' || orb.kind === 'armor') {
+      // Update 15: legacy 'weapon' orbs (in old save data) and new 'armor' orbs
+      // both yield armor now. Weapons cannot be obtained from dungeons.
       const armorKey = rollDungeonArmor(floor);
       if (armorKey && grantArmor(c, armorKey)) {
         setMsg(`Found armor: ${ARMORS[armorKey].n}!`);
@@ -2392,26 +2558,14 @@ function KrezcentQuest() {
     const grade = floorLootGrade(floor);
     const coins = Math.floor(20 + rand() * 50 + floor * 5);
     c.coins += coins;
-    // Loot roll: items are common, weapons rare, armor rarer, scaling with floor.
+    // Loot roll (Update 15): weapons can no longer drop from chests. The slot
+    // weapons used to occupy now drops armor (so chests are now 14% armor + 86% items).
     const roll = rand();
-    if (roll < 0.04) {
-      // Armor find (rare).
+    if (roll < 0.14) {
       const armorKey = rollDungeonArmor(floor);
       if (armorKey && grantArmor(c, armorKey)) {
         setMsg(`Chest: armor — ${ARMORS[armorKey].n}! (+🪙${coins})`);
       } else {
-        const itemKey = rollItemOfGrade(grade);
-        if (itemKey) { addItemToInventory({ key: itemKey, name: ITEMS[itemKey].n, grade }); setMsg(`Chest: ${grade}-grade ${ITEMS[itemKey].n} (+🪙${coins})`); }
-        else setMsg(`Chest: +🪙${coins}`);
-      }
-    } else if (roll < 0.14) {
-      // Weapon find (rarer). Quality rises with floor via rollDungeonWeapon's floor gate.
-      const weaponKey = rollDungeonWeapon(floor);
-      if (weaponKey && !c.ownedWeapons.includes(weaponKey)) {
-        c.ownedWeapons.push(weaponKey); c.weaponLevels = c.weaponLevels || {}; c.weaponLevels[weaponKey] = c.weaponLevels[weaponKey] || 1;
-        setMsg(`Chest: a weapon — ${WEAPONS[weaponKey].n}! (+🪙${coins})`);
-      } else {
-        // already owned or none available -> fall back to an item
         const itemKey = rollItemOfGrade(grade);
         if (itemKey) { addItemToInventory({ key: itemKey, name: ITEMS[itemKey].n, grade }); setMsg(`Chest: ${grade}-grade ${ITEMS[itemKey].n} (+🪙${coins})`); }
         else setMsg(`Chest: +🪙${coins}`);
@@ -2666,6 +2820,8 @@ function KrezcentQuest() {
       w.npcs = [];
       w.lavaBurnAcc = 0; w.effectAcc = 0;
       spawnFloorLoot(w.maze, w.floor);
+      // Update 15: Phoenixbone revive is per-floor; reset on entry.
+      if (charRef.current) charRef.current.phoenixUsedThisFloor = false;
       setMsg(`F${w.floor} — ${w.maze.floorName}. ${w.maze.intro || ''}`);
     }
     setHudTick(t => t + 1);
@@ -4310,84 +4466,163 @@ function KrezcentQuest() {
     const outfit = c.outfit || 'tunic';
     const cloth = c.clothColor || '#5b21b6';
     const clothDark = shadeColor(cloth, -0.35);
+    const clothLight = shadeColor(cloth, 0.20);
     // Cloak drawn behind the body
     if (outfit === 'cloak') {
       ctx.fillStyle = clothDark;
       ctx.beginPath();
       ctx.moveTo(x - 12, y - 4); ctx.lineTo(x + 12, y - 4);
       ctx.lineTo(x + 15, y + 18); ctx.lineTo(x - 15, y + 18); ctx.closePath(); ctx.fill();
+      // shoulder clasp
+      ctx.fillStyle = '#ffd54f';
+      ctx.beginPath(); ctx.arc(x - 9, y - 2, 1.5, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(x + 9, y - 2, 1.5, 0, Math.PI * 2); ctx.fill();
     }
     ctx.fillStyle = cloth;
     if (outfit === 'robe') {
-      // long flowing robe (wider at the bottom)
+      // long flowing robe with wide sleeves visible and decorative trim
       ctx.beginPath();
       ctx.moveTo(x - 11, y - 2); ctx.lineTo(x + 11, y - 2);
-      ctx.lineTo(x + 13, y + 20); ctx.lineTo(x - 13, y + 20); ctx.closePath(); ctx.fill();
-      ctx.fillStyle = shadeColor(cloth, 0.2); ctx.fillRect(x - 2, y - 2, 4, 22); // center seam
+      ctx.lineTo(x + 14, y + 22); ctx.lineTo(x - 14, y + 22); ctx.closePath(); ctx.fill();
+      // wide hanging sleeves
+      ctx.fillStyle = clothDark;
+      ctx.beginPath(); ctx.moveTo(x - 11, y - 1); ctx.lineTo(x - 15, y + 12); ctx.lineTo(x - 11, y + 12); ctx.closePath(); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(x + 11, y - 1); ctx.lineTo(x + 15, y + 12); ctx.lineTo(x + 11, y + 12); ctx.closePath(); ctx.fill();
+      // center seam + golden trim
+      ctx.fillStyle = clothLight; ctx.fillRect(x - 1, y - 2, 2, 24);
+      ctx.fillStyle = '#ffd54f';
+      ctx.fillRect(x - 12, y + 19, 24, 1.5);
     } else if (outfit === 'armor') {
-      // boxy plate chest with shoulder pads
+      // boxy plate chest with shoulder pads, defined breastplate lines
       ctx.fillRect(x - 11, y - 2, 22, 14);
-      ctx.fillStyle = clothDark; ctx.fillRect(x - 13, y - 3, 5, 6); ctx.fillRect(x + 8, y - 3, 5, 6);
-      ctx.fillStyle = shadeColor(cloth, 0.25); ctx.fillRect(x - 8, y, 16, 3); // chest highlight
+      // shoulder pauldrons
+      ctx.fillStyle = clothDark;
+      ctx.beginPath(); ctx.ellipse(x - 12, y, 5, 5, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(x + 12, y, 5, 5, 0, 0, Math.PI * 2); ctx.fill();
+      // chest plate sheen + rivets
+      ctx.fillStyle = clothLight;
+      ctx.fillRect(x - 8, y, 16, 3);
+      ctx.fillStyle = shadeColor(cloth, -0.5);
+      ctx.beginPath(); ctx.arc(x - 6, y + 8, 1, 0, Math.PI * 2); ctx.arc(x + 6, y + 8, 1, 0, Math.PI * 2);
+      ctx.arc(x - 6, y + 11, 1, 0, Math.PI * 2); ctx.arc(x + 6, y + 11, 1, 0, Math.PI * 2);
+      ctx.fill();
+      // central plate division
+      ctx.strokeStyle = shadeColor(cloth, -0.5); ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(x, y - 2); ctx.lineTo(x, y + 12); ctx.stroke();
     } else if (outfit === 'vest') {
-      // open vest over skin
-      ctx.fillStyle = c.skin; ctx.fillRect(x - 9, y - 2, 18, 14);
+      // open vest exposing chest shirt
+      ctx.fillStyle = shadeColor(c.skin, -0.05); ctx.fillRect(x - 9, y - 2, 18, 14);
       ctx.fillStyle = cloth;
-      ctx.beginPath(); ctx.moveTo(x - 11, y - 2); ctx.lineTo(x - 3, y - 2); ctx.lineTo(x - 5, y + 12); ctx.lineTo(x - 11, y + 12); ctx.closePath(); ctx.fill();
-      ctx.beginPath(); ctx.moveTo(x + 11, y - 2); ctx.lineTo(x + 3, y - 2); ctx.lineTo(x + 5, y + 12); ctx.lineTo(x + 11, y + 12); ctx.closePath(); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(x - 11, y - 2); ctx.lineTo(x - 2, y - 2); ctx.lineTo(x - 5, y + 12); ctx.lineTo(x - 11, y + 12); ctx.closePath(); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(x + 11, y - 2); ctx.lineTo(x + 2, y - 2); ctx.lineTo(x + 5, y + 12); ctx.lineTo(x + 11, y + 12); ctx.closePath(); ctx.fill();
+      // pendant
+      ctx.strokeStyle = '#ffd54f'; ctx.lineWidth = 0.8;
+      ctx.beginPath(); ctx.moveTo(x - 3, y - 2); ctx.lineTo(x, y + 3); ctx.lineTo(x + 3, y - 2); ctx.stroke();
+      ctx.fillStyle = '#ffd54f'; ctx.beginPath(); ctx.arc(x, y + 4, 1.5, 0, Math.PI * 2); ctx.fill();
     } else if (outfit === 'jerkin') {
-      // sleeveless layered top with cinched waist
-      ctx.fillStyle = shadeColor(cloth, -0.2);
-      ctx.fillRect(x - 11, y - 2, 22, 14);
+      // belted leather work-jerkin: shoulder layer + chest panel + thick belt
+      ctx.fillStyle = clothDark;
+      ctx.beginPath(); ctx.moveTo(x - 12, y - 2); ctx.lineTo(x + 12, y - 2); ctx.lineTo(x + 10, y + 5); ctx.lineTo(x - 10, y + 5); ctx.closePath(); ctx.fill();
       ctx.fillStyle = cloth;
-      ctx.beginPath(); ctx.moveTo(x - 11, y - 2); ctx.lineTo(x + 11, y - 2); ctx.lineTo(x + 9, y + 8); ctx.lineTo(x - 9, y + 8); ctx.closePath(); ctx.fill();
-      ctx.fillStyle = '#3e2723'; ctx.fillRect(x - 11, y + 8, 22, 3);
+      ctx.fillRect(x - 9, y + 2, 18, 7);
+      // brown belt
+      ctx.fillStyle = '#3e2723'; ctx.fillRect(x - 11, y + 9, 22, 3);
+      // belt buckle
+      ctx.fillStyle = '#ffd54f'; ctx.fillRect(x - 2, y + 9, 4, 3);
+      // pocket flap
+      ctx.fillStyle = clothDark;
+      ctx.fillRect(x - 8, y + 4, 4, 3);
     } else if (outfit === 'hood') {
-      // hooded shirt: hood rises behind/over head
+      // hood UP over head plus shirt below
       ctx.fillStyle = cloth;
+      // shirt
       ctx.beginPath(); ctx.moveTo(x - 11, y - 2); ctx.lineTo(x + 11, y - 2); ctx.lineTo(x + 9, y + 12); ctx.lineTo(x - 9, y + 12); ctx.closePath(); ctx.fill();
-      // hood mantle drawn at neck/shoulder line
-      ctx.fillStyle = shadeColor(cloth, -0.25);
-      ctx.beginPath(); ctx.moveTo(x - 12, y - 3); ctx.quadraticCurveTo(x, y + 4, x + 12, y - 3); ctx.lineTo(x + 12, y + 1); ctx.quadraticCurveTo(x, y + 8, x - 12, y + 1); ctx.closePath(); ctx.fill();
+      // hood draped behind/around head
+      ctx.fillStyle = clothDark;
+      ctx.beginPath();
+      ctx.moveTo(x - 12, y - 6);
+      ctx.quadraticCurveTo(x - 16, y - 16, x, y - 22);
+      ctx.quadraticCurveTo(x + 16, y - 16, x + 12, y - 6);
+      ctx.lineTo(x + 13, y - 2);
+      ctx.quadraticCurveTo(x, y + 4, x - 13, y - 2);
+      ctx.closePath(); ctx.fill();
+      // inner hood shadow under chin
+      ctx.fillStyle = 'rgba(0,0,0,0.3)';
+      ctx.beginPath(); ctx.ellipse(x, y - 8, 8, 3, 0, 0, Math.PI * 2); ctx.fill();
     } else if (outfit === 'noble') {
-      // elegant doublet with collar trim and ornate band
+      // elegant doublet — gold buttons, fancy collar
       ctx.fillStyle = cloth;
       ctx.beginPath(); ctx.moveTo(x - 11, y - 2); ctx.lineTo(x + 11, y - 2); ctx.lineTo(x + 10, y + 13); ctx.lineTo(x - 10, y + 13); ctx.closePath(); ctx.fill();
+      // gold buttons in a vertical row
       ctx.fillStyle = '#ffd54f';
-      ctx.fillRect(x - 1, y - 2, 2, 14);
-      for (let i = 0; i < 3; i++) { ctx.beginPath(); ctx.arc(x, y + i * 4, 1, 0, Math.PI * 2); ctx.fill(); }
-      ctx.fillStyle = shadeColor(cloth, 0.3);
-      ctx.beginPath(); ctx.moveTo(x - 12, y - 3); ctx.lineTo(x - 8, y - 3); ctx.lineTo(x - 10, y + 1); ctx.closePath(); ctx.fill();
-      ctx.beginPath(); ctx.moveTo(x + 12, y - 3); ctx.lineTo(x + 8, y - 3); ctx.lineTo(x + 10, y + 1); ctx.closePath(); ctx.fill();
+      for (let i = 0; i < 4; i++) { ctx.beginPath(); ctx.arc(x, y + i * 3.5, 1.2, 0, Math.PI * 2); ctx.fill(); }
+      // ornate collar (split V at neckline)
+      ctx.fillStyle = '#ffd54f';
+      ctx.beginPath(); ctx.moveTo(x - 11, y - 3); ctx.lineTo(x - 1, y + 3); ctx.lineTo(x - 4, y - 3); ctx.closePath(); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(x + 11, y - 3); ctx.lineTo(x + 1, y + 3); ctx.lineTo(x + 4, y - 3); ctx.closePath(); ctx.fill();
+      // side gold trim down the sides
+      ctx.fillStyle = '#ffd54f';
+      ctx.fillRect(x - 11, y - 2, 1, 16);
+      ctx.fillRect(x + 10, y - 2, 1, 16);
     } else if (outfit === 'rags') {
-      // torn jagged hem
-      ctx.fillStyle = cloth;
+      // tattered, layered, frayed hem
+      ctx.fillStyle = clothDark;
       ctx.beginPath();
       ctx.moveTo(x - 11, y - 2); ctx.lineTo(x + 11, y - 2);
-      const points = [12, 6, 10, 5, 11, 3, 12, 4, 11];
-      for (let i = 0; i < points.length; i++) {
-        const px = x + 11 - i * 22 / (points.length - 1);
-        ctx.lineTo(px, y + points[i]);
+      // jagged bottom edge
+      const pts = [10, 4, 11, 7, 12, 5, 10, 8, 11];
+      const n = pts.length;
+      for (let i = 0; i < n; i++) {
+        const px = x + 11 - (i + 1) * 22 / n;
+        ctx.lineTo(px, y + pts[i]);
       }
       ctx.closePath(); ctx.fill();
-      ctx.strokeStyle = clothDark; ctx.lineWidth = 0.8;
-      ctx.beginPath(); ctx.moveTo(x - 5, y + 1); ctx.lineTo(x + 3, y + 7); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(x + 4, y); ctx.lineTo(x + 8, y + 6); ctx.stroke();
+      ctx.fillStyle = cloth;
+      // overlapping torn panel on chest
+      ctx.beginPath();
+      ctx.moveTo(x - 9, y - 2); ctx.lineTo(x + 3, y - 2); ctx.lineTo(x + 1, y + 6); ctx.lineTo(x - 7, y + 5); ctx.closePath(); ctx.fill();
+      // visible tears/seams
+      ctx.strokeStyle = shadeColor(cloth, -0.5); ctx.lineWidth = 0.8;
+      ctx.beginPath(); ctx.moveTo(x - 4, y + 1); ctx.lineTo(x + 2, y + 9); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x + 5, y - 1); ctx.lineTo(x + 9, y + 8); ctx.stroke();
+      ctx.lineWidth = 1;
+      // rope-belt
+      ctx.strokeStyle = '#8d6e63'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(x - 11, y + 9); ctx.lineTo(x + 11, y + 9); ctx.stroke();
       ctx.lineWidth = 1;
     } else if (outfit === 'warden') {
-      // heavy guard tunic with crossed straps and emblem
+      // heavy guard tunic with crossed straps and badge
       ctx.fillStyle = cloth;
       ctx.fillRect(x - 11, y - 2, 22, 14);
-      ctx.strokeStyle = '#3e2723'; ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.moveTo(x - 11, y - 1); ctx.lineTo(x + 11, y + 10); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(x + 11, y - 1); ctx.lineTo(x - 11, y + 10); ctx.stroke();
-      ctx.lineWidth = 1;
-      ctx.fillStyle = '#ffd54f'; ctx.beginPath(); ctx.arc(x, y + 4, 2, 0, Math.PI * 2); ctx.fill();
+      // wide leather straps crossing
+      ctx.fillStyle = '#3e2723';
+      ctx.save(); ctx.translate(x, y + 5); ctx.rotate(0.5);
+      ctx.fillRect(-14, -2, 28, 3);
+      ctx.restore();
+      ctx.save(); ctx.translate(x, y + 5); ctx.rotate(-0.5);
+      ctx.fillRect(-14, -2, 28, 3);
+      ctx.restore();
+      // central guard badge (six-point star)
+      ctx.fillStyle = '#ffd54f';
+      ctx.beginPath();
+      for (let i = 0; i < 6; i++) {
+        const a = i * Math.PI / 3 - Math.PI / 2;
+        const r = (i % 2 === 0) ? 3 : 1.5;
+        const px = x + Math.cos(a) * r, py = y + 5 + Math.sin(a) * r;
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.closePath(); ctx.fill();
+      // shoulder caps
+      ctx.fillStyle = shadeColor(cloth, -0.4);
+      ctx.fillRect(x - 12, y - 2, 3, 6);
+      ctx.fillRect(x + 9, y - 2, 3, 6);
     } else {
-      // tunic (default trapezoid)
+      // tunic (default) — simple but with a single decorative trim
       ctx.beginPath();
       ctx.moveTo(x - 11, y - 2); ctx.lineTo(x + 11, y - 2);
       ctx.lineTo(x + 9, y + 12); ctx.lineTo(x - 9, y + 12); ctx.closePath(); ctx.fill();
+      // chest stripe
+      ctx.fillStyle = clothLight; ctx.fillRect(x - 9, y + 2, 18, 2);
     }
     ctx.fillStyle = '#3e2723'; ctx.fillRect(x - 10, y + 7, 20, 3);
     ctx.fillStyle = '#fbc02d'; ctx.fillRect(x - 2, y + 7, 4, 3);
@@ -4417,129 +4652,290 @@ function KrezcentQuest() {
     const hairDark = shadeColor(c.hair, -0.35);
     const hairLight = shadeColor(c.hair, 0.20);
     if (hs === 'short') {
-      // rounded cap with a subtle highlight on top
+      // Close-cropped cap. Slightly wider than head; visible sideburns at temples.
       ctx.beginPath(); ctx.arc(x, y - 12, 11.5, Math.PI * 0.95, Math.PI * 2.05); ctx.fill();
-      ctx.fillStyle = hairLight; ctx.beginPath(); ctx.arc(x - 3, y - 17, 4, Math.PI, Math.PI * 1.7); ctx.fill();
+      // small sideburn tufts
+      ctx.fillRect(x - 11, y - 12, 2, 4);
+      ctx.fillRect(x + 9, y - 12, 2, 4);
+      // top sheen highlight
+      ctx.fillStyle = hairLight;
+      ctx.beginPath(); ctx.ellipse(x - 3, y - 18, 3, 1.2, 0.5, 0, Math.PI * 2); ctx.fill();
     }
     else if (hs === 'long') {
-      // long flowing — wide shape with strands down the sides
-      ctx.beginPath(); ctx.ellipse(x, y - 8, 13, 16, 0, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = c.skin; ctx.beginPath(); ctx.arc(x, y - 10, 9, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = c.hair; ctx.beginPath(); ctx.arc(x, y - 14, 11.5, Math.PI * 0.95, Math.PI * 2.05); ctx.fill();
+      // Long hair: hair frames the head and hangs well past the shoulders on both sides.
+      ctx.fillStyle = c.hair;
+      // top cap covering the scalp + front fringe
+      ctx.beginPath(); ctx.arc(x, y - 12, 11.5, Math.PI * 0.95, Math.PI * 2.05); ctx.fill();
+      // hair flowing down the sides past head, ending at shoulder height
+      ctx.beginPath();
+      ctx.moveTo(x - 12, y - 14);
+      ctx.lineTo(x - 14, y + 4);
+      ctx.quadraticCurveTo(x - 12, y + 10, x - 8, y + 8);
+      ctx.lineTo(x - 8, y - 14);
+      ctx.closePath(); ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(x + 12, y - 14);
+      ctx.lineTo(x + 14, y + 4);
+      ctx.quadraticCurveTo(x + 12, y + 10, x + 8, y + 8);
+      ctx.lineTo(x + 8, y - 14);
+      ctx.closePath(); ctx.fill();
+      // shadow strand for depth
       ctx.fillStyle = hairDark;
-      ctx.beginPath(); ctx.ellipse(x - 11, y + 1, 2, 8, 0.2, 0, Math.PI * 2); ctx.fill();
-      ctx.beginPath(); ctx.ellipse(x + 11, y + 1, 2, 8, -0.2, 0, Math.PI * 2); ctx.fill();
+      ctx.fillRect(x - 12, y - 5, 1, 10);
+      ctx.fillRect(x + 11, y - 5, 1, 10);
     }
     else if (hs === 'spiky') {
-      // jagged spikes instead of perfectly triangular
+      // Clearly punky spikes radiating up and outward from a short base.
       ctx.beginPath(); ctx.arc(x, y - 12, 11, Math.PI, Math.PI * 2); ctx.fill();
-      const heights = [7, 10, 11, 10, 7];
-      for (let i = 0; i < 5; i++) {
-        const cx = x + (i - 2) * 4;
+      // 7 distinct spikes splayed around the top
+      const spikes = [
+        [-9, -14, -13, -22],
+        [-5, -16, -7, -25],
+        [-2, -17, -2, -26],
+        [ 2, -17,  3, -26],
+        [ 5, -16,  7, -25],
+        [ 9, -14, 13, -22],
+        [ 0, -15,  0, -23], // center stub for fill
+      ];
+      for (const [bx, by, tx2, ty] of spikes) {
         ctx.beginPath();
-        ctx.moveTo(cx - 2.5, y - 14);
-        ctx.lineTo(cx - 0.5, y - 14 - heights[i]);
-        ctx.lineTo(cx + 1, y - 14 - heights[i] + 2);
-        ctx.lineTo(cx + 2.5, y - 14);
+        ctx.moveTo(x + bx - 2, y + by);
+        ctx.lineTo(x + tx2, y + ty);
+        ctx.lineTo(x + bx + 2, y + by);
         ctx.closePath(); ctx.fill();
       }
       ctx.fillStyle = hairLight;
-      ctx.beginPath(); ctx.moveTo(x - 4, y - 14); ctx.lineTo(x - 2.5, y - 22); ctx.lineTo(x - 1, y - 14); ctx.closePath(); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(x - 1, y - 17); ctx.lineTo(x, y - 25); ctx.lineTo(x + 1, y - 17); ctx.closePath(); ctx.fill();
     }
     else if (hs === 'mohawk') {
-      // shaved sides + tall ridge
-      ctx.fillStyle = shadeColor(c.skin, -0.05); ctx.beginPath(); ctx.arc(x, y - 12, 11, Math.PI, Math.PI * 2); ctx.fill();
+      // Sides clearly shaved; tall ridge of hair down the middle (front-to-back).
+      ctx.fillStyle = shadeColor(c.skin, -0.08); ctx.beginPath(); ctx.arc(x, y - 12, 11, Math.PI, Math.PI * 2); ctx.fill();
+      // tall trapezoidal ridge — wider than before so it reads as a mohawk
       ctx.fillStyle = c.hair;
-      ctx.beginPath(); ctx.moveTo(x - 3, y - 14); ctx.lineTo(x - 1, y - 26); ctx.lineTo(x + 1, y - 26); ctx.lineTo(x + 3, y - 14); ctx.closePath(); ctx.fill();
-      ctx.fillStyle = hairLight; ctx.fillRect(x - 1.5, y - 24, 1, 10);
+      ctx.beginPath();
+      ctx.moveTo(x - 4, y - 14);
+      ctx.lineTo(x - 2.5, y - 28);
+      ctx.lineTo(x + 2.5, y - 28);
+      ctx.lineTo(x + 4, y - 14);
+      ctx.closePath(); ctx.fill();
+      // tip highlight
+      ctx.fillStyle = hairLight;
+      ctx.fillRect(x - 1, y - 27, 2, 12);
+      // shaved stubble dots on the side
+      ctx.fillStyle = hairDark;
+      ctx.beginPath(); ctx.arc(x - 7, y - 16, 0.6, 0, Math.PI * 2); ctx.arc(x + 7, y - 16, 0.6, 0, Math.PI * 2); ctx.fill();
     }
     else if (hs === 'ponytail') {
+      // Side-facing player: ponytail hangs DOWN and back. We draw it tied at the
+      // back-top of the head with a thicker tail trailing behind shoulders.
       ctx.beginPath(); ctx.arc(x, y - 12, 11.5, Math.PI * 0.95, Math.PI * 2.05); ctx.fill();
-      // longer tail with a band
+      // tie band
+      ctx.fillStyle = hairDark;
+      ctx.beginPath(); ctx.ellipse(x - 10, y - 13, 2.5, 2, 0.4, 0, Math.PI * 2); ctx.fill();
+      // tail: thick curve down the back
       ctx.fillStyle = c.hair;
-      ctx.beginPath(); ctx.ellipse(x - 13, y - 2, 4, 15, 0.5, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = hairDark; ctx.beginPath(); ctx.ellipse(x - 11, y - 10, 3, 2, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(x - 11, y - 12);
+      ctx.quadraticCurveTo(x - 17, y - 6, x - 15, y + 2);
+      ctx.quadraticCurveTo(x - 14, y + 12, x - 11, y + 14);
+      ctx.lineTo(x - 8, y + 13);
+      ctx.quadraticCurveTo(x - 10, y + 4, x - 11, y - 4);
+      ctx.lineTo(x - 9, y - 12);
+      ctx.closePath(); ctx.fill();
     }
     else if (hs === 'bun') {
+      // Tight head + a large, visible spherical bun on top with wrap detail.
       ctx.beginPath(); ctx.arc(x, y - 12, 11.5, Math.PI * 0.95, Math.PI * 2.05); ctx.fill();
-      // bun with wrap detail
-      ctx.beginPath(); ctx.arc(x, y - 23, 6, 0, Math.PI * 2); ctx.fill();
-      ctx.strokeStyle = hairDark; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(x, y - 23, 5, 0, Math.PI * 2); ctx.stroke();
+      // pulled-up section connecting head to bun
+      ctx.fillRect(x - 3, y - 22, 6, 6);
+      // the bun itself (larger sphere)
+      ctx.beginPath(); ctx.arc(x, y - 25, 7, 0, Math.PI * 2); ctx.fill();
+      // hair wrap detail
+      ctx.strokeStyle = hairDark; ctx.lineWidth = 1.2;
+      ctx.beginPath(); ctx.arc(x, y - 25, 5.5, 0.1, Math.PI - 0.1); ctx.stroke();
+      ctx.beginPath(); ctx.arc(x, y - 25, 5.5, Math.PI + 0.1, Math.PI * 2 - 0.1); ctx.stroke();
+      ctx.lineWidth = 1;
+      // tiny stray strand
+      ctx.fillStyle = c.hair;
+      ctx.beginPath(); ctx.ellipse(x - 8, y - 11, 1, 3, -0.3, 0, Math.PI * 2); ctx.fill();
     }
     else if (hs === 'curly') {
-      // overlapping curl bumps for a fuller look
-      ctx.beginPath(); ctx.arc(x, y - 12, 11.5, Math.PI * 0.95, Math.PI * 2.05); ctx.fill();
-      const curls = [[-8,-18,5],[-3,-21,6],[3,-21,6],[8,-18,5],[-9,-14,4],[9,-14,4]];
+      // Full afro-style curls: many overlapping circles forming a wide poof shape.
+      const curls = [
+        [-9, -13, 5], [-5, -16, 5.5], [0, -18, 6], [5, -16, 5.5], [9, -13, 5],
+        [-7, -18, 4], [-2, -20, 4.5], [3, -20, 4.5], [8, -18, 4],
+        [-10, -8, 4], [10, -8, 4],
+      ];
       for (const [cx, cy, r] of curls) { ctx.beginPath(); ctx.arc(x + cx, y + cy, r, 0, Math.PI * 2); ctx.fill(); }
-      ctx.fillStyle = hairLight; ctx.beginPath(); ctx.arc(x - 3, y - 21, 1.5, 0, Math.PI * 2); ctx.fill();
+      // highlights on a few curls to show separation
+      ctx.fillStyle = hairLight;
+      ctx.beginPath(); ctx.arc(x - 5, y - 17, 1.5, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(x + 5, y - 17, 1.5, 0, Math.PI * 2); ctx.fill();
+      // shadow on a few curls
+      ctx.fillStyle = hairDark;
+      ctx.beginPath(); ctx.arc(x - 8, y - 11, 1.2, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(x + 8, y - 11, 1.2, 0, Math.PI * 2); ctx.fill();
     }
     else if (hs === 'bald') {
-      // subtle scalp highlight so it doesn't look bald-by-accident
-      ctx.fillStyle = shadeColor(c.skin, 0.08);
-      ctx.beginPath(); ctx.arc(x - 3, y - 15, 3, 0, Math.PI * 2); ctx.fill();
+      // Truly bald: scalp highlight gives a shiny appearance, no hair at all.
+      ctx.fillStyle = shadeColor(c.skin, 0.10);
+      ctx.beginPath(); ctx.arc(x - 2, y - 16, 4, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = shadeColor(c.skin, 0.18);
+      ctx.beginPath(); ctx.arc(x - 3, y - 18, 1.5, 0, Math.PI * 2); ctx.fill();
     }
-    // --- NEW STYLES (Update 13) ---
+    // --- Refined Update-13 styles ---
     else if (hs === 'wavy') {
-      // wavy hair: scalloped edges
+      // Shoulder-length wavy hair with a clear scalloped silhouette.
+      ctx.fillStyle = c.hair;
+      // Cap
+      ctx.beginPath(); ctx.arc(x, y - 12, 11.5, Math.PI * 0.95, Math.PI * 2.05); ctx.fill();
+      // Wavy sides hanging down
       ctx.beginPath();
       ctx.moveTo(x - 12, y - 8);
-      for (let i = 0; i < 6; i++) ctx.quadraticCurveTo(x - 10 + i * 4, y - 22 - (i % 2) * 3, x - 8 + i * 4, y - 8);
+      ctx.quadraticCurveTo(x - 16, y - 3, x - 13, y + 3);
+      ctx.quadraticCurveTo(x - 17, y + 7, x - 12, y + 12);
+      ctx.lineTo(x - 8, y + 10);
+      ctx.lineTo(x - 8, y - 8);
       ctx.closePath(); ctx.fill();
-      ctx.fillStyle = hairLight; ctx.beginPath(); ctx.arc(x - 5, y - 17, 2, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(x + 12, y - 8);
+      ctx.quadraticCurveTo(x + 16, y - 3, x + 13, y + 3);
+      ctx.quadraticCurveTo(x + 17, y + 7, x + 12, y + 12);
+      ctx.lineTo(x + 8, y + 10);
+      ctx.lineTo(x + 8, y - 8);
+      ctx.closePath(); ctx.fill();
+      // light wave highlights
+      ctx.fillStyle = hairLight;
+      ctx.beginPath(); ctx.ellipse(x - 11, y, 1, 4, 0.3, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(x + 11, y, 1, 4, -0.3, 0, Math.PI * 2); ctx.fill();
     }
     else if (hs === 'braided') {
+      // Single thick braid hanging down the back (visible from side).
       ctx.beginPath(); ctx.arc(x, y - 12, 11.5, Math.PI * 0.95, Math.PI * 2.05); ctx.fill();
-      // a single braid down the back
+      // braid: stacked overlapping ovals down the back, getting slightly narrower
       ctx.fillStyle = c.hair;
-      for (let i = 0; i < 4; i++) {
-        ctx.beginPath(); ctx.ellipse(x + 12, y - 6 + i * 6, 3.5, 3.5, 0, 0, Math.PI * 2); ctx.fill();
+      const links = [[-12,-10,3.5],[-13,-5,3.5],[-13,0,3.3],[-14,5,3.2],[-14,10,3],[-14,14,2.5]];
+      for (const [bx, by, r] of links) {
+        ctx.beginPath(); ctx.arc(x + bx, y + by, r, 0, Math.PI * 2); ctx.fill();
       }
-      ctx.fillStyle = hairDark;
-      for (let i = 0; i < 3; i++) { ctx.fillRect(x + 9, y - 3 + i * 6, 6, 0.8); }
+      // braid weave: diagonal dark strokes between links
+      ctx.strokeStyle = hairDark; ctx.lineWidth = 1.2;
+      for (let i = 0; i < links.length - 1; i++) {
+        const [a, b] = [links[i], links[i + 1]];
+        const dir = (i % 2 === 0) ? 1 : -1;
+        ctx.beginPath();
+        ctx.moveTo(x + a[0] - 2 * dir, y + a[1] + 1);
+        ctx.lineTo(x + b[0] + 2 * dir, y + b[1] - 1);
+        ctx.stroke();
+      }
+      ctx.lineWidth = 1;
+      // tie at the bottom
+      ctx.strokeStyle = '#3e2723'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(x - 16, y + 15); ctx.lineTo(x - 12, y + 15); ctx.stroke();
+      ctx.lineWidth = 1;
     }
     else if (hs === 'undercut') {
-      // shaved sides, fuller top
-      ctx.fillStyle = shadeColor(c.skin, -0.06); ctx.beginPath(); ctx.arc(x, y - 12, 11, Math.PI, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = c.hair;
-      ctx.beginPath();
-      ctx.moveTo(x - 9, y - 15); ctx.quadraticCurveTo(x - 4, y - 23, x + 2, y - 22);
-      ctx.quadraticCurveTo(x + 9, y - 20, x + 10, y - 12); ctx.lineTo(x - 9, y - 12); ctx.closePath(); ctx.fill();
-    }
-    else if (hs === 'dreadlocks') {
-      ctx.beginPath(); ctx.arc(x, y - 12, 11.5, Math.PI * 0.95, Math.PI * 2.05); ctx.fill();
-      // hanging locks
-      ctx.fillStyle = c.hair;
-      for (let i = 0; i < 5; i++) {
-        const lx = x - 10 + i * 5;
-        ctx.fillRect(lx - 1, y - 12, 2.5, 14);
-        ctx.beginPath(); ctx.arc(lx + 0.25, y + 2, 1.6, 0, Math.PI * 2); ctx.fill();
+      // Sharp transition: shaved sides clearly, full fluffy top swept slightly.
+      ctx.fillStyle = shadeColor(c.skin, -0.10);
+      ctx.beginPath(); ctx.arc(x, y - 12, 11, Math.PI, Math.PI * 2); ctx.fill();
+      // Stubble dots on the sides
+      ctx.fillStyle = hairDark;
+      for (let i = 0; i < 6; i++) {
+        ctx.beginPath(); ctx.arc(x - 8 + (i % 3) * 2, y - 10 + Math.floor(i / 3) * 2, 0.4, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(x + 4 + (i % 3) * 2, y - 10 + Math.floor(i / 3) * 2, 0.4, 0, Math.PI * 2); ctx.fill();
       }
-    }
-    else if (hs === 'topknot') {
-      // shaved sides, knot on top
-      ctx.fillStyle = shadeColor(c.skin, -0.05); ctx.beginPath(); ctx.arc(x, y - 12, 11, Math.PI, Math.PI * 2); ctx.fill();
+      // Top hair: full and swept
       ctx.fillStyle = c.hair;
-      ctx.fillRect(x - 2, y - 22, 4, 8);
-      ctx.beginPath(); ctx.arc(x, y - 24, 5, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = hairDark; ctx.fillRect(x - 3, y - 20, 6, 1.2);
-    }
-    else if (hs === 'sidecut') {
-      // hair swept to one side
       ctx.beginPath();
-      ctx.moveTo(x - 12, y - 12); ctx.lineTo(x - 11, y - 19);
-      ctx.quadraticCurveTo(x, y - 26, x + 12, y - 16);
-      ctx.lineTo(x + 12, y - 12); ctx.closePath(); ctx.fill();
+      ctx.moveTo(x - 9, y - 14);
+      ctx.quadraticCurveTo(x - 6, y - 25, x + 5, y - 23);
+      ctx.quadraticCurveTo(x + 11, y - 19, x + 10, y - 14);
+      ctx.closePath(); ctx.fill();
+      // sweep highlight
       ctx.fillStyle = hairLight;
       ctx.beginPath();
-      ctx.moveTo(x - 8, y - 15); ctx.lineTo(x + 4, y - 22); ctx.lineTo(x + 6, y - 20); ctx.lineTo(x - 6, y - 13); ctx.closePath(); ctx.fill();
+      ctx.moveTo(x - 4, y - 18); ctx.lineTo(x + 4, y - 22); ctx.lineTo(x + 6, y - 20); ctx.lineTo(x - 2, y - 16); ctx.closePath(); ctx.fill();
+    }
+    else if (hs === 'dreadlocks') {
+      // Thick rope-like locks hanging from the scalp, each with a heavier tip.
+      ctx.beginPath(); ctx.arc(x, y - 12, 11.5, Math.PI * 0.95, Math.PI * 2.05); ctx.fill();
+      ctx.fillStyle = c.hair;
+      const lockPositions = [-10, -6, -2, 2, 6, 10];
+      for (const lx of lockPositions) {
+        // body of the lock
+        ctx.fillRect(x + lx - 1.5, y - 12, 3, 18);
+        // bulb at the tip
+        ctx.beginPath(); ctx.arc(x + lx, y + 7, 2.5, 0, Math.PI * 2); ctx.fill();
+      }
+      // Bead/wrap detail on a couple locks
+      ctx.fillStyle = '#ffd54f';
+      ctx.beginPath(); ctx.arc(x - 6, y, 1.2, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(x + 6, y - 3, 1.2, 0, Math.PI * 2); ctx.fill();
+      // Shadows between locks
+      ctx.fillStyle = hairDark;
+      for (const lx of [-8, -4, 0, 4, 8]) ctx.fillRect(x + lx - 0.3, y - 10, 0.6, 14);
+    }
+    else if (hs === 'topknot') {
+      // Samurai topknot: shaved/undercut sides + tied bun pulled high on top.
+      ctx.fillStyle = shadeColor(c.skin, -0.08); ctx.beginPath(); ctx.arc(x, y - 12, 11, Math.PI, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = c.hair;
+      // base hair on crown (small)
+      ctx.beginPath(); ctx.arc(x, y - 14, 4, Math.PI, Math.PI * 2); ctx.fill();
+      // gather connecting to bun
+      ctx.fillRect(x - 1.5, y - 22, 3, 8);
+      // bun
+      ctx.beginPath(); ctx.arc(x, y - 26, 5.5, 0, Math.PI * 2); ctx.fill();
+      // tie band
+      ctx.fillStyle = hairDark;
+      ctx.fillRect(x - 2, y - 22, 4, 1.5);
+      ctx.fillRect(x - 2, y - 19, 4, 1.5);
+    }
+    else if (hs === 'sidecut') {
+      // Hair sweeping clearly to one side; one half shaved, other half full and swept.
+      ctx.fillStyle = shadeColor(c.skin, -0.08);
+      ctx.beginPath(); ctx.arc(x, y - 12, 11, Math.PI, Math.PI * 2); ctx.fill();
+      // shaved side: subtle stubble dots on left
+      ctx.fillStyle = hairDark;
+      for (let i = 0; i < 4; i++) ctx.fillRect(x - 9 + i * 1.5, y - 14, 0.6, 0.6);
+      // full swept hair on right + over top
+      ctx.fillStyle = c.hair;
+      ctx.beginPath();
+      ctx.moveTo(x - 4, y - 14);
+      ctx.quadraticCurveTo(x - 2, y - 24, x + 6, y - 24);
+      ctx.quadraticCurveTo(x + 13, y - 20, x + 12, y - 12);
+      ctx.lineTo(x - 2, y - 12);
+      ctx.closePath(); ctx.fill();
+      // long flowing strand on the right
+      ctx.beginPath();
+      ctx.moveTo(x + 11, y - 12);
+      ctx.lineTo(x + 13, y + 3);
+      ctx.lineTo(x + 9, y + 3);
+      ctx.lineTo(x + 8, y - 12);
+      ctx.closePath(); ctx.fill();
+      // highlight
+      ctx.fillStyle = hairLight;
+      ctx.beginPath();
+      ctx.moveTo(x - 1, y - 18); ctx.lineTo(x + 6, y - 22); ctx.lineTo(x + 8, y - 20); ctx.lineTo(x + 1, y - 16); ctx.closePath(); ctx.fill();
     }
     else if (hs === 'pompadour') {
-      // tall front sweep, shorter back
+      // Tall, voluminous front sweep with a pomade sheen; shorter sides.
       ctx.beginPath(); ctx.arc(x, y - 12, 11, Math.PI, Math.PI * 2); ctx.fill();
+      // big front wave
       ctx.beginPath();
-      ctx.moveTo(x - 8, y - 14); ctx.quadraticCurveTo(x - 6, y - 24, x + 2, y - 22);
-      ctx.quadraticCurveTo(x + 8, y - 20, x + 6, y - 14); ctx.closePath(); ctx.fill();
-      ctx.fillStyle = hairLight; ctx.beginPath(); ctx.arc(x - 2, y - 20, 1.5, 0, Math.PI * 2); ctx.fill();
+      ctx.moveTo(x - 9, y - 14);
+      ctx.quadraticCurveTo(x - 10, y - 28, x + 2, y - 26);
+      ctx.quadraticCurveTo(x + 10, y - 22, x + 8, y - 14);
+      ctx.closePath(); ctx.fill();
+      // top wave detail (the signature roll)
+      ctx.fillStyle = hairLight;
+      ctx.beginPath();
+      ctx.moveTo(x - 5, y - 22);
+      ctx.quadraticCurveTo(x - 3, y - 26, x + 4, y - 25);
+      ctx.quadraticCurveTo(x + 5, y - 23, x + 3, y - 22);
+      ctx.closePath(); ctx.fill();
+      // shadow underline
+      ctx.fillStyle = hairDark;
+      ctx.beginPath(); ctx.moveTo(x - 8, y - 14); ctx.lineTo(x + 8, y - 14); ctx.lineTo(x + 6, y - 12); ctx.lineTo(x - 6, y - 12); ctx.closePath(); ctx.fill();
     }
     else { ctx.beginPath(); ctx.arc(x, y - 12, 11.5, Math.PI * 0.95, Math.PI * 2.05); ctx.fill(); }
     const eyeOff = Math.cos(p.dir) * 1.2;
@@ -4901,16 +5297,23 @@ function KrezcentQuest() {
       const draw = () => {
         const t = (performance.now() - t0) / 1000;
         ctx.clearRect(0, 0, cv.width, cv.height);
-        ctx.fillStyle = 'rgba(124,77,255,0.08)';
-        ctx.beginPath(); ctx.arc(cv.width / 2, cv.height / 2 + 10, 46, 0, Math.PI * 2); ctx.fill();
+        // Soft purple platform glow
+        ctx.fillStyle = 'rgba(124,77,255,0.10)';
+        ctx.beginPath(); ctx.ellipse(cv.width / 2, cv.height / 2 + 35, 78, 16, 0, 0, Math.PI * 2); ctx.fill();
         const fakeP = { dir: Math.sin(t * 1.2) * 0.9, moving: true, animTime: t, invuln: 0, shield: 0, sky: 0, buffs: {} };
-        drawPlayer(ctx, cv.width / 2, cv.height / 2, fakeC, fakeP);
+        // Update 15: bigger preview (260x260) + 2× scale around the character so
+        // the player can actually see hair/face/outfit detail while customizing.
+        ctx.save();
+        ctx.translate(cv.width / 2, cv.height / 2 + 20);
+        ctx.scale(2.0, 2.0);
+        drawPlayer(ctx, 0, 0, fakeC, fakeP);
+        ctx.restore();
         raf = requestAnimationFrame(draw);
       };
       draw();
       return () => cancelAnimationFrame(raf);
     }, [hair, eye, skin, hairstyle, expression, outfit, clothColor, weapon]);
-    return <canvas ref={ref} width={160} height={150} className="rounded bg-slate-900 border border-slate-700" />;
+    return <canvas ref={ref} width={260} height={260} className="rounded bg-slate-900 border border-slate-700" />;
   }
 
   function CharacterCreator() {
@@ -5063,12 +5466,26 @@ function KrezcentQuest() {
     const expressions = ['neutral','happy','angry','cool','surprised','smug','sad','focused','grin'];
     const outfits = ['tunic','robe','armor','cloak','vest','jerkin','hood','noble','rags','warden'];
     const clothOptions = [
-      // jewel tones
-      '#5b21b6','#1565c0','#1976d2','#0277bd','#2e7d32','#388e3c','#558b2f','#827717','#f9a825','#ff8f00','#e65100','#bf360c','#c62828','#b71c1c','#880e4f','#ad1457','#6a1b9a','#4a148c','#311b92','#1a237e','#0d47a1','#004d40','#1b5e20','#33691e','#3e2723','#212121','#37474f','#263238','#37474f',
-      // muted & neutral
-      '#6d4c41','#8d6e63','#a1887f','#bcaaa4','#d7ccc8','#90a4ae','#b0bec5','#cfd8dc','#ffffff','#212121','#5d4037','#4e342e',
-      // accents
-      '#00838f','#00acc1','#ef6c00','#fb8c00','#ffd54f','#fdd835','#9c27b0','#7b1fa2','#aa00ff','#d500f9'
+      // Whites / neutrals
+      '#ffffff','#f5f5f5','#cfd8dc','#b0bec5','#90a4ae','#9e9e9e','#616161','#424242','#212121',
+      // Earth tones
+      '#8d6e63','#6d4c41','#5d4037','#4e342e','#3e2723','#a1887f','#bcaaa4','#d7ccc8',
+      // Reds & pinks
+      '#c62828','#b71c1c','#d32f2f','#e53935','#880e4f','#ad1457','#c2185b','#e91e63',
+      // Oranges
+      '#bf360c','#e65100','#ef6c00','#fb8c00','#ff8f00','#ff7043','#f4511e',
+      // Yellows
+      '#f9a825','#fdd835','#fbc02d','#ffd54f',
+      // Greens
+      '#33691e','#1b5e20','#2e7d32','#388e3c','#558b2f','#7cb342','#827717',
+      // Teals & cyans
+      '#004d40','#00695c','#00838f','#00acc1','#0097a7','#26a69a',
+      // Blues
+      '#0d47a1','#1565c0','#1976d2','#0277bd','#1e88e5','#3949ab','#283593','#1a237e',
+      // Purples & violets
+      '#311b92','#4a148c','#6a1b9a','#7b1fa2','#9c27b0','#aa00ff','#d500f9','#5b21b6','#7e57c2',
+      // Dark accents
+      '#263238','#37474f',
     ];
     return (
       <div className="h-full overflow-auto p-6" style={{ background: 'radial-gradient(ellipse at center, #2d1b4e 0%, #1a0f24 70%, #000 100%)', color: 'white' }}>
