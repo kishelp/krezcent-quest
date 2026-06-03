@@ -74,6 +74,7 @@ function KrezcentQuest() {
   const [msg, setMsg] = useState('');
   const [modal, setModal] = useState(null);
   const [shopTab, setShopTab] = useState('buy');
+  const [bsTab, setBsTab] = useState('weapons');
   const [pvpOpp, setPvpOpp] = useState(null);
   const [loadoutTab, setLoadoutTab] = useState('abilities');
   const [loadoutAffFilter, setLoadoutAffFilter] = useState('All');
@@ -352,7 +353,17 @@ function KrezcentQuest() {
           else if (!collidesWall(pr.x, pr.y - pr.vy * dt * 2, true)) pr.vy = -pr.vy;
           else { pr.vx = -pr.vx; pr.vy = -pr.vy; }
           pr.x += pr.vx * dt; pr.y += pr.vy * dt;
+          // Pinball: damage & speed both rise with each bounce.
+          if (pr.pinball) {
+            pr.dmg *= 1.25;
+            pr.vx *= 1.12; pr.vy *= 1.12;
+          }
         } else { if (pr.explodeRadius) explodeProjectile(pr); return false; }
+      }
+      // Mirage projectile: starts non-homing, becomes homing after its timer expires.
+      if (pr.mirage && pr.mirageTimer != null) {
+        pr.mirageTimer -= dt;
+        if (pr.mirageTimer <= 0 && !pr.homing) { pr.homing = true; }
       }
       // Training dummies: player projectiles hit them (starting field, no maze).
       if (pr.fromPlayer && w.dummies && w.dummies.length) {
@@ -379,6 +390,7 @@ function KrezcentQuest() {
             if (pr.pierceRamp) d *= (1 + (pr.pierced || 0) * pr.pierceRamp);
             if (pr.longshot) d *= 1 + pr.longshot * Math.min(1, Math.hypot(pr.x - pr.ox, pr.y - pr.oy) / (pr.maxRange || 300));
             damageMonster(m, d, pr.aff);
+            if (pr.applyStatus === 'bind') { m.slow = Math.max(m.slow || 0, 3); applyMonsterDot(m, pr.dmg * 0.15, 3, pr.color || '#e0e0ff'); }
             if (pr.poison) applyMonsterDot(m, pr.poison.dps, pr.poison.dur, '#9ccc65');
             if (pr.knockback) pushMonster(m, p.x, p.y, pr.knockback);
             if (pr.explodeRadius) { explodeProjectile(pr); return false; }
@@ -392,6 +404,7 @@ function KrezcentQuest() {
             if (pr.pierceRamp) d *= (1 + (pr.pierced || 0) * pr.pierceRamp);
             if (pr.longshot) d *= 1 + pr.longshot * Math.min(1, Math.hypot(pr.x - pr.ox, pr.y - pr.oy) / (pr.maxRange || 300));
             damageBoss(d, pr.aff);
+            if (pr.applyStatus === 'bind') { applyBossStatus('slow', 3); applyBossDot(pr.dmg * 0.15, 3, pr.color || '#e0e0ff'); }
             if (pr.explodeRadius) { explodeProjectile(pr); return false; }
             if (pr.pierce) pr.hitBoss = true; else return false;
           }
@@ -432,6 +445,112 @@ function KrezcentQuest() {
         if (ef.tickAcc >= 0.4) {
           ef.tickAcc = 0;
           if (Math.hypot(ef.x - p.x, ef.y - p.y) < ef.radius && p.invuln <= 0 && p.sky <= 0) damagePlayer(ef.dmg * 0.18, ef.aff);
+        }
+      }
+      // === Update 13 new ability behaviors ===
+      // Crystal Bloom: at end of life, shatter into 8 outward shards.
+      if (ef.type === 'crystal_bloom' && !ef.shattered && ef.life <= 0.05) {
+        ef.shattered = true;
+        for (let i = 0; i < 8; i++) {
+          const a = (i / 8) * Math.PI * 2;
+          w.projectiles.push({ x: ef.x, y: ef.y, vx: Math.cos(a) * 380, vy: Math.sin(a) * 380, life: 0.7, dmg: ef.dmg * 0.45, aff: ef.aff, fromPlayer: true, color: ef.color, spell: ef.fam });
+        }
+      }
+      // Gravity Well: pull nearby enemies in each frame; explode at end.
+      if (ef.type === 'gravity_well') {
+        if (w.maze) {
+          for (const m of w.maze.monsters) {
+            if (m.hp <= 0) continue;
+            const mx = m.x * 40 + 20, my = m.y * 40 + 20;
+            const d = Math.hypot(ef.x - mx, ef.y - my);
+            if (d > 6 && d < ef.radius) { const pull = 60 * dt / d; m.x += (ef.x - mx) * pull / 40; m.y += (ef.y - my) * pull / 40; }
+          }
+        }
+        if (!ef.exploded && ef.life <= 0.1) {
+          ef.exploded = true;
+          if (w.maze) {
+            for (const m of w.maze.monsters) { if (m.hp <= 0) continue; if (Math.hypot(m.x * 40 + 20 - ef.x, m.y * 40 + 20 - ef.y) < ef.radius) damageMonster(m, ef.dmg, ef.aff); }
+            if (!w.maze.boss.defeated && w.maze.bossHp != null && Math.hypot(w.maze.bossPx - ef.x, w.maze.bossPy - ef.y) < ef.radius + 20) damageBoss(ef.dmg, ef.aff);
+          }
+          if (!w.maze && w.dummies) hitDummies(ef.x, ef.y, ef.radius, ef.dmg, ef.aff);
+          w.effects.push({ x: ef.x, y: ef.y, type: 'nova', life: 0.4, delay: 0, dmg: 0, aff: ef.aff, radius: ef.radius, fromPlayer: true, color: ef.color, fam: ef.fam });
+        }
+      }
+      // Frost Lantern: drifts forward, ticks freezing damage in a small radius, novas at end.
+      if (ef.type === 'frost_lantern') {
+        ef.x += (ef.vx || 0) * dt;
+        ef.y += (ef.vy || 0) * dt;
+        ef.tickAcc = (ef.tickAcc || 0) + dt;
+        if (ef.tickAcc >= 0.4) {
+          ef.tickAcc = 0;
+          if (w.maze) {
+            for (const m of w.maze.monsters) { if (m.hp <= 0) continue; if (Math.hypot(m.x * 40 + 20 - ef.x, m.y * 40 + 20 - ef.y) < 90) { damageMonster(m, ef.dmg * 0.20, ef.aff); m.slow = Math.max(m.slow || 0, 2); } }
+            if (!w.maze.boss.defeated && w.maze.bossHp != null && Math.hypot(w.maze.bossPx - ef.x, w.maze.bossPy - ef.y) < 110) { damageBoss(ef.dmg * 0.20, ef.aff); applyBossStatus('slow', 2); }
+          }
+          if (!w.maze && w.dummies) hitDummies(ef.x, ef.y, 90, ef.dmg * 0.20, ef.aff, { kind: 'freeze', dur: 2 });
+        }
+        if (!ef.detonated2 && ef.life <= 0.1) {
+          ef.detonated2 = true;
+          w.effects.push({ x: ef.x, y: ef.y, type: 'nova', life: 0.5, delay: 0, dmg: ef.dmg * 1.4, aff: ef.aff, radius: 150, fromPlayer: true, color: ef.color, fam: ef.fam });
+        }
+      }
+      // Marked Snap: jaws snap at the marked location for burst damage at end.
+      if (ef.type === 'marked_snap' && !ef.snapped && ef.life <= 0.1) {
+        ef.snapped = true;
+        if (w.maze) {
+          for (const m of w.maze.monsters) { if (m.hp <= 0) continue; if (Math.hypot(m.x * 40 + 20 - ef.x, m.y * 40 + 20 - ef.y) < 60) damageMonster(m, ef.dmg, ef.aff); }
+          if (!w.maze.boss.defeated && w.maze.bossHp != null && Math.hypot(w.maze.bossPx - ef.x, w.maze.bossPy - ef.y) < 80) damageBoss(ef.dmg, ef.aff);
+        }
+        if (!w.maze && w.dummies) hitDummies(ef.x, ef.y, 60, ef.dmg, ef.aff);
+      }
+      // Prism Beams: rotates and fires beams that damage on each tick.
+      if (ef.type === 'prism_beams') {
+        ef.rot = (ef.rot || 0) + dt * 1.6;
+        ef.tickAcc = (ef.tickAcc || 0) + dt;
+        if (ef.tickAcc >= 0.25) {
+          ef.tickAcc = 0;
+          for (let i = 0; i < 4; i++) {
+            const a = ef.rot + i * (Math.PI / 2);
+            // Damage anything within a thin cone along the beam (length ~300).
+            if (w.maze) {
+              for (const m of w.maze.monsters) {
+                if (m.hp <= 0) continue;
+                const mx = m.x * 40 + 20, my = m.y * 40 + 20;
+                const dd = Math.hypot(mx - ef.x, my - ef.y);
+                if (dd > 300) continue;
+                const ma = Math.atan2(my - ef.y, mx - ef.x);
+                let da = Math.abs(ma - a); if (da > Math.PI) da = 2 * Math.PI - da;
+                if (da < 0.10) damageMonster(m, ef.dmg * 0.25, ef.aff);
+              }
+              if (!w.maze.boss.defeated && w.maze.bossHp != null) {
+                const dd = Math.hypot(w.maze.bossPx - ef.x, w.maze.bossPy - ef.y);
+                if (dd < 320) {
+                  const ma = Math.atan2(w.maze.bossPy - ef.y, w.maze.bossPx - ef.x);
+                  let da = Math.abs(ma - a); if (da > Math.PI) da = 2 * Math.PI - da;
+                  if (da < 0.10) damageBoss(ef.dmg * 0.25, ef.aff);
+                }
+              }
+            }
+            if (!w.maze && w.dummies) {
+              for (const d of w.dummies) {
+                const dd = Math.hypot(d.x - ef.x, d.y - ef.y);
+                if (dd > 300) continue;
+                const ma = Math.atan2(d.y - ef.y, d.x - ef.x);
+                let da = Math.abs(ma - a); if (da > Math.PI) da = 2 * Math.PI - da;
+                if (da < 0.10) damageDummy(d, ef.dmg * 0.25, ef.aff);
+              }
+            }
+          }
+        }
+      }
+      // Chrono Mark: detonates after delay; if target still alive, big damage.
+      if (ef.type === 'chrono_mark' && !ef.detonated3 && ef.life <= 0.1) {
+        ef.detonated3 = true;
+        const t = ef.target;
+        if (ef.targetIsBoss && w.maze && !w.maze.boss.defeated && w.maze.bossHp != null) {
+          damageBoss(ef.dmg, ef.aff);
+        } else if (t && t.hp > 0 && w.maze) {
+          damageMonster(t, ef.dmg, ef.aff);
         }
       }
       if (ef.delay !== undefined) {
@@ -1966,6 +2085,127 @@ function KrezcentQuest() {
       c.hp = clamp(c.hp + c.maxHp * 0.3 + dmg, 0, c.maxHp);
       w.effects.push({ x: p.x, y: p.y, type: 'spellburst', life: 0.6, color: '#69f0ae', radius: 36, fam: 'light' });
       addFloat(p.x, p.y - 30, '+heal', '#69f0ae');
+
+    // ============== UPDATE 13 NEW ABILITY KINDS ==============
+    } else if (abil.k === 'starfall') {
+      // Glowing spear crashes down at the clicked location; shockwave on impact.
+      const cur2 = vpRef.current;
+      const reach = Math.min(360, Math.hypot(w.mouse.x - cur2.w / 2, w.mouse.y - cur2.h / 2));
+      const tx = p.x + Math.cos(ang) * reach, ty = p.y + Math.sin(ang) * reach;
+      // Telegraph marker
+      w.effects.push({ x: tx, y: ty, type: 'starfall_marker', life: 0.6, color, fam });
+      // The actual impact (delayed nova)
+      w.effects.push({ x: tx, y: ty, type: 'nova', life: 0.6, delay: 0.6, dmg, aff, radius: 130, fromPlayer: true, color, fam });
+
+    } else if (abil.k === 'echo_rift') {
+      // A dimensional rift firing 3 pulses over a few seconds. Each pulse is a small nova.
+      const cur2 = vpRef.current;
+      const reach = Math.min(280, Math.hypot(w.mouse.x - cur2.w / 2, w.mouse.y - cur2.h / 2));
+      const tx = p.x + Math.cos(ang) * reach, ty = p.y + Math.sin(ang) * reach;
+      w.effects.push({ x: tx, y: ty, type: 'echo_rift', life: 3.0, color, fam });
+      for (let i = 0; i < 3; i++) {
+        w.effects.push({ x: tx, y: ty, type: 'nova', life: 0.45, delay: 0.4 + i * 0.85, dmg: dmg * 0.5, aff, radius: 110, fromPlayer: true, color, fam });
+      }
+
+    } else if (abil.k === 'thornstorm') {
+      // 360 degree projectile burst + a lingering ground hazard.
+      const n = 12;
+      for (let i = 0; i < n; i++) {
+        const a = (i / n) * Math.PI * 2;
+        w.projectiles.push({ x: p.x, y: p.y, vx: Math.cos(a) * 360, vy: Math.sin(a) * 360, life: 0.7, dmg: dmg * 0.45, aff, fromPlayer: true, color, spell: fam });
+      }
+      w.effects.push({ x: p.x, y: p.y, type: 'field', life: 2.5, dmg: dmg * 0.5, aff, radius: 90, fromPlayer: true, color, fam, tickAcc: 0 });
+
+    } else if (abil.k === 'binding_chain') {
+      // Homing projectile that, on hit, applies slow + DoT (lunar chains binding).
+      w.projectiles.push({ x: p.x, y: p.y, vx: Math.cos(ang) * 380, vy: Math.sin(ang) * 380, life: 1.4, dmg, aff, fromPlayer: true, color, spell: fam, homing: true, applyStatus: 'bind', big: true });
+
+    } else if (abil.k === 'homing_snake') {
+      // Slow seeking serpent that explodes on contact.
+      w.projectiles.push({ x: p.x, y: p.y, vx: Math.cos(ang) * 260, vy: Math.sin(ang) * 260, life: 2.2, dmg, aff, fromPlayer: true, color, spell: fam, homing: true, snake: true, explodeRadius: 80, trail: true });
+
+    } else if (abil.k === 'crystal_bloom') {
+      // A delayed AoE under target that shatters into 8 outward shards.
+      const cur2 = vpRef.current;
+      const reach = Math.min(240, Math.hypot(w.mouse.x - cur2.w / 2, w.mouse.y - cur2.h / 2));
+      const tx = p.x + Math.cos(ang) * reach, ty = p.y + Math.sin(ang) * reach;
+      w.effects.push({ x: tx, y: ty, type: 'crystal_bloom', life: 1.0, color, fam, dmg, aff, fromPlayer: true });
+
+    } else if (abil.k === 'gravity_well') {
+      // Pulls enemies in, then explodes.
+      const cur2 = vpRef.current;
+      const reach = Math.min(260, Math.hypot(w.mouse.x - cur2.w / 2, w.mouse.y - cur2.h / 2));
+      const tx = p.x + Math.cos(ang) * reach, ty = p.y + Math.sin(ang) * reach;
+      w.effects.push({ x: tx, y: ty, type: 'gravity_well', life: 1.6, color, fam, dmg, aff, fromPlayer: true, radius: 160 });
+
+    } else if (abil.k === 'phantom_line') {
+      // 5 spectral copies dash forward in a line, each piercing.
+      for (let i = 0; i < 5; i++) {
+        w.projectiles.push({
+          x: p.x + Math.cos(ang + Math.PI / 2) * ((i - 2) * 6),
+          y: p.y + Math.sin(ang + Math.PI / 2) * ((i - 2) * 6),
+          vx: Math.cos(ang) * 520, vy: Math.sin(ang) * 520,
+          life: 0.7, dmg: dmg * 0.55, aff, fromPlayer: true, color, spell: fam,
+          pierce: true, hitSet: new Set(), trail: true, phantom: true
+        });
+      }
+
+    } else if (abil.k === 'lightning_wheel') {
+      // Slow-moving electrified saw — a big piercing projectile with crackle.
+      w.projectiles.push({ x: p.x, y: p.y, vx: Math.cos(ang) * 280, vy: Math.sin(ang) * 280, life: 1.6, dmg: dmg * 0.6, aff, fromPlayer: true, color, spell: fam, pierce: true, hitSet: new Set(), wheel: true, big: true });
+
+    } else if (abil.k === 'frost_lantern') {
+      // Floating ice lantern drifts forward, ticks freezing AoE, eventually novas.
+      w.effects.push({ x: p.x, y: p.y, type: 'frost_lantern', life: 3.0, vx: Math.cos(ang) * 60, vy: Math.sin(ang) * 60, color, fam, dmg, aff, fromPlayer: true, tickAcc: 0 });
+
+    } else if (abil.k === 'marked_snap') {
+      // Marks the nearest enemy; after a brief delay, giant jaws snap shut for burst damage.
+      let target = null, bd = 360;
+      if (w.maze) for (const m of w.maze.monsters) { if (m.hp <= 0) continue; const d = Math.hypot(m.x * 40 + 20 - p.x, m.y * 40 + 20 - p.y); if (d < bd) { bd = d; target = m; } }
+      if (target) {
+        const tx = target.x * 40 + 20, ty = target.y * 40 + 20;
+        w.effects.push({ x: tx, y: ty, type: 'marked_snap', life: 0.9, color, fam, dmg: dmg * 1.6, aff, fromPlayer: true });
+      } else if (w.maze && !w.maze.boss.defeated && w.maze.bossHp != null) {
+        w.effects.push({ x: w.maze.bossPx, y: w.maze.bossPy, type: 'marked_snap', life: 0.9, color, fam, dmg: dmg * 1.6, aff, fromPlayer: true });
+      } else {
+        // Forward burst if no targets
+        const tx = p.x + Math.cos(ang) * 200, ty = p.y + Math.sin(ang) * 200;
+        w.effects.push({ x: tx, y: ty, type: 'marked_snap', life: 0.9, color, fam, dmg: dmg * 1.6, aff, fromPlayer: true });
+      }
+
+    } else if (abil.k === 'pinball_orb') {
+      // Bounces off walls, gaining speed/damage on each bounce.
+      w.projectiles.push({ x: p.x, y: p.y, vx: Math.cos(ang) * 440, vy: Math.sin(ang) * 440, life: 2.5, dmg: dmg * 0.5, aff, fromPlayer: true, color, spell: fam, pinball: true, bounces: 6, trail: true, big: true });
+
+    } else if (abil.k === 'mirage_swarm') {
+      // Several projectiles that home in on the nearest target after traveling.
+      const n = 5;
+      for (let i = 0; i < n; i++) {
+        const a = ang + (i - (n - 1) / 2) * 0.6;
+        w.projectiles.push({ x: p.x, y: p.y, vx: Math.cos(a) * 360, vy: Math.sin(a) * 360, life: 1.4, dmg: dmg * 0.5, aff, fromPlayer: true, color, spell: fam, mirage: true, mirageTimer: 0.4, homing: false, trail: true });
+      }
+
+    } else if (abil.k === 'prism_beams') {
+      // A stationary crystal that fires 4 rotating beams over its lifetime.
+      w.effects.push({ x: p.x, y: p.y, type: 'prism_beams', life: 2.5, color, fam, dmg, aff, fromPlayer: true, rot: 0, tickAcc: 0 });
+
+    } else if (abil.k === 'chrono_mark') {
+      // Mark the nearest enemy/boss; over 2.5s, all damage to it is doubled when the mark detonates.
+      let target = null, bd = 360, targetIsBoss = false;
+      if (w.maze) {
+        for (const m of w.maze.monsters) { if (m.hp <= 0) continue; const d = Math.hypot(m.x * 40 + 20 - p.x, m.y * 40 + 20 - p.y); if (d < bd) { bd = d; target = m; targetIsBoss = false; } }
+        if (!w.maze.boss.defeated && w.maze.bossHp != null) {
+          const d = Math.hypot(w.maze.bossPx - p.x, w.maze.bossPy - p.y);
+          if (d < bd) { bd = d; target = { x: w.maze.bossPx, y: w.maze.bossPy }; targetIsBoss = true; }
+        }
+      }
+      if (target) {
+        const tx = targetIsBoss ? target.x : target.x * 40 + 20;
+        const ty = targetIsBoss ? target.y : target.y * 40 + 20;
+        w.effects.push({ x: tx, y: ty, type: 'chrono_mark', life: 2.5, color, fam, dmg: dmg * 2.0, aff, fromPlayer: true, target, targetIsBoss });
+      } else {
+        addFloat(p.x, p.y - 30, 'no target', '#ccc');
+      }
     }
   }
 
@@ -2606,6 +2846,145 @@ function KrezcentQuest() {
           ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke();
         }
         ctx.restore(); ctx.globalAlpha = 1; ctx.lineWidth = 1;
+      // === Update 13 new effect renderers ===
+      } else if (ef.type === 'starfall_marker') {
+        // A spear falling from the sky toward the target.
+        const t = 1 - Math.max(0, ef.life) / (ef.life0 || 0.6);
+        const fallY = ey - 220 * (1 - t);
+        ctx.save(); ctx.shadowColor = ef.color; ctx.shadowBlur = 20;
+        ctx.strokeStyle = ef.color; ctx.lineWidth = 4;
+        ctx.beginPath(); ctx.moveTo(ex, fallY); ctx.lineTo(ex, fallY + 36); ctx.stroke();
+        ctx.fillStyle = ef.color;
+        ctx.beginPath(); ctx.moveTo(ex, fallY + 36); ctx.lineTo(ex - 6, fallY + 24); ctx.lineTo(ex + 6, fallY + 24); ctx.closePath(); ctx.fill();
+        // landing crosshair
+        ctx.globalAlpha = 0.4 + Math.sin(performance.now() / 60) * 0.3;
+        ctx.strokeStyle = ef.color; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(ex, ey, 26 - t * 16, 0, Math.PI * 2); ctx.stroke();
+        ctx.restore(); ctx.globalAlpha = 1;
+      } else if (ef.type === 'echo_rift') {
+        // A jagged tear in space.
+        ctx.save();
+        ctx.globalAlpha = 0.7 * Math.max(0, ef.life / (ef.life0 || 3));
+        ctx.strokeStyle = ef.color; ctx.lineWidth = 3; ctx.shadowColor = ef.color; ctx.shadowBlur = 14;
+        ctx.beginPath();
+        ctx.moveTo(ex - 20, ey - 10);
+        ctx.lineTo(ex - 8, ey + 4);
+        ctx.lineTo(ex + 4, ey - 6);
+        ctx.lineTo(ex + 18, ey + 10);
+        ctx.stroke();
+        ctx.globalAlpha = 0.3 * Math.max(0, ef.life / (ef.life0 || 3));
+        ctx.fillStyle = ef.color;
+        ctx.beginPath(); ctx.ellipse(ex, ey, 22, 12, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.restore(); ctx.globalAlpha = 1;
+      } else if (ef.type === 'crystal_bloom') {
+        // A crystal flower that grows and pulses before shattering.
+        const t = 1 - Math.max(0, ef.life) / (ef.life0 || 1);
+        const r = 10 + t * 22;
+        ctx.save();
+        ctx.shadowColor = ef.color; ctx.shadowBlur = 18;
+        ctx.fillStyle = ef.color; ctx.globalAlpha = 0.85;
+        for (let i = 0; i < 6; i++) {
+          const a = i / 6 * Math.PI * 2 + t * 0.5;
+          ctx.beginPath();
+          ctx.moveTo(ex, ey);
+          ctx.lineTo(ex + Math.cos(a) * r, ey + Math.sin(a) * r);
+          ctx.lineTo(ex + Math.cos(a + 0.3) * r * 0.4, ey + Math.sin(a + 0.3) * r * 0.4);
+          ctx.closePath(); ctx.fill();
+        }
+        ctx.fillStyle = '#fff'; ctx.globalAlpha = 0.6;
+        ctx.beginPath(); ctx.arc(ex, ey, 4, 0, Math.PI * 2); ctx.fill();
+        ctx.restore(); ctx.globalAlpha = 1;
+      } else if (ef.type === 'gravity_well') {
+        // Black hole with swirling event horizon.
+        const t = (ef.life0 || 1.6) - Math.max(0, ef.life);
+        ctx.save();
+        ctx.shadowColor = ef.color; ctx.shadowBlur = 26;
+        // Outer pull ring
+        ctx.strokeStyle = ef.color; ctx.lineWidth = 2; ctx.globalAlpha = 0.5;
+        for (let r = ef.radius; r > 10; r -= 28) {
+          ctx.beginPath(); ctx.arc(ex, ey, r, 0, Math.PI * 2); ctx.stroke();
+        }
+        // Dark core
+        ctx.fillStyle = '#0a0a14'; ctx.globalAlpha = 1;
+        ctx.beginPath(); ctx.arc(ex, ey, 18, 0, Math.PI * 2); ctx.fill();
+        // Swirling particles
+        ctx.fillStyle = ef.color;
+        for (let i = 0; i < 6; i++) {
+          const a = t * 4 + i * Math.PI / 3;
+          const rr = 22 + Math.sin(t * 6 + i) * 6;
+          ctx.globalAlpha = 0.85;
+          ctx.beginPath(); ctx.arc(ex + Math.cos(a) * rr, ey + Math.sin(a) * rr, 2.5, 0, Math.PI * 2); ctx.fill();
+        }
+        ctx.restore(); ctx.globalAlpha = 1;
+      } else if (ef.type === 'frost_lantern') {
+        // Floating ice lantern with mist.
+        const t = performance.now() / 1000;
+        ctx.save();
+        ctx.shadowColor = ef.color; ctx.shadowBlur = 18;
+        // Chains
+        ctx.strokeStyle = '#b3e5fc'; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(ex - 8, ey - 14); ctx.lineTo(ex - 4, ey - 4); ctx.moveTo(ex + 8, ey - 14); ctx.lineTo(ex + 4, ey - 4); ctx.stroke();
+        // Lantern body (diamond)
+        ctx.fillStyle = ef.color;
+        ctx.beginPath(); ctx.moveTo(ex, ey - 4); ctx.lineTo(ex + 10, ey + 6); ctx.lineTo(ex, ey + 16); ctx.lineTo(ex - 10, ey + 6); ctx.closePath(); ctx.fill();
+        ctx.fillStyle = '#fff'; ctx.globalAlpha = 0.7;
+        ctx.beginPath(); ctx.arc(ex, ey + 6, 4, 0, Math.PI * 2); ctx.fill();
+        // Mist particles
+        ctx.fillStyle = '#cce7ff'; ctx.globalAlpha = 0.4;
+        for (let i = 0; i < 5; i++) { const a = t * 1.5 + i; ctx.beginPath(); ctx.arc(ex + Math.cos(a) * 18, ey + Math.sin(a) * 12, 4, 0, Math.PI * 2); ctx.fill(); }
+        ctx.restore(); ctx.globalAlpha = 1;
+      } else if (ef.type === 'marked_snap') {
+        // Giant crimson jaws snapping shut.
+        const t = 1 - Math.max(0, ef.life) / (ef.life0 || 0.9);
+        const gap = 30 * (1 - t);
+        ctx.save();
+        ctx.shadowColor = ef.color; ctx.shadowBlur = 20;
+        ctx.fillStyle = ef.color;
+        // Upper jaw
+        ctx.beginPath(); ctx.moveTo(ex - 24, ey - gap - 4); ctx.lineTo(ex + 24, ey - gap - 4);
+        for (let i = 0; i < 6; i++) { const tx = ex - 20 + i * 8; ctx.lineTo(tx + 2, ey - gap + 6); ctx.lineTo(tx + 6, ey - gap - 4); }
+        ctx.closePath(); ctx.fill();
+        // Lower jaw
+        ctx.beginPath(); ctx.moveTo(ex - 24, ey + gap + 4); ctx.lineTo(ex + 24, ey + gap + 4);
+        for (let i = 0; i < 6; i++) { const tx = ex - 20 + i * 8; ctx.lineTo(tx + 2, ey + gap - 6); ctx.lineTo(tx + 6, ey + gap + 4); }
+        ctx.closePath(); ctx.fill();
+        ctx.restore();
+      } else if (ef.type === 'prism_beams') {
+        // Floating crystal with rotating laser beams.
+        const t = performance.now() / 1000;
+        ctx.save();
+        ctx.shadowColor = ef.color; ctx.shadowBlur = 18;
+        // Crystal
+        ctx.fillStyle = ef.color;
+        ctx.beginPath(); ctx.moveTo(ex, ey - 12); ctx.lineTo(ex + 10, ey); ctx.lineTo(ex, ey + 12); ctx.lineTo(ex - 10, ey); ctx.closePath(); ctx.fill();
+        ctx.fillStyle = '#fff'; ctx.globalAlpha = 0.7;
+        ctx.beginPath(); ctx.arc(ex, ey, 4, 0, Math.PI * 2); ctx.fill();
+        ctx.globalAlpha = 1;
+        // Rotating beams
+        ctx.strokeStyle = ef.color; ctx.lineWidth = 3; ctx.globalAlpha = 0.7;
+        const rot = ef.rot || 0;
+        for (let i = 0; i < 4; i++) {
+          const a = rot + i * (Math.PI / 2);
+          ctx.beginPath(); ctx.moveTo(ex, ey); ctx.lineTo(ex + Math.cos(a) * 300, ey + Math.sin(a) * 300); ctx.stroke();
+        }
+        ctx.restore(); ctx.globalAlpha = 1;
+      } else if (ef.type === 'chrono_mark') {
+        // A glowing clock-face mark hovering over the target.
+        // Mark follows live target if it's still alive.
+        let mx = ef.x, my = ef.y;
+        if (ef.targetIsBoss && w.maze && !w.maze.boss.defeated) { mx = w.maze.bossPx; my = w.maze.bossPy; }
+        else if (ef.target && ef.target.hp > 0) { mx = ef.target.x * 40 + 20; my = ef.target.y * 40 + 20; }
+        const sx = mx - cam.x, sy = my - cam.y - 32;
+        const t = performance.now() / 1000;
+        ctx.save();
+        ctx.shadowColor = ef.color; ctx.shadowBlur = 14;
+        ctx.strokeStyle = ef.color; ctx.lineWidth = 2.5; ctx.globalAlpha = 0.85;
+        ctx.beginPath(); ctx.arc(sx, sy, 12, 0, Math.PI * 2); ctx.stroke();
+        // clock hand
+        ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(sx + Math.cos(t * 6) * 9, sy + Math.sin(t * 6) * 9); ctx.stroke();
+        // tick marks
+        for (let i = 0; i < 12; i++) { const a = i * Math.PI / 6; ctx.beginPath(); ctx.moveTo(sx + Math.cos(a) * 10, sy + Math.sin(a) * 10); ctx.lineTo(sx + Math.cos(a) * 12, sy + Math.sin(a) * 12); ctx.stroke(); }
+        ctx.restore(); ctx.globalAlpha = 1;
       }
     }
     // Projectiles
@@ -3952,6 +4331,54 @@ function KrezcentQuest() {
       ctx.fillStyle = cloth;
       ctx.beginPath(); ctx.moveTo(x - 11, y - 2); ctx.lineTo(x - 3, y - 2); ctx.lineTo(x - 5, y + 12); ctx.lineTo(x - 11, y + 12); ctx.closePath(); ctx.fill();
       ctx.beginPath(); ctx.moveTo(x + 11, y - 2); ctx.lineTo(x + 3, y - 2); ctx.lineTo(x + 5, y + 12); ctx.lineTo(x + 11, y + 12); ctx.closePath(); ctx.fill();
+    } else if (outfit === 'jerkin') {
+      // sleeveless layered top with cinched waist
+      ctx.fillStyle = shadeColor(cloth, -0.2);
+      ctx.fillRect(x - 11, y - 2, 22, 14);
+      ctx.fillStyle = cloth;
+      ctx.beginPath(); ctx.moveTo(x - 11, y - 2); ctx.lineTo(x + 11, y - 2); ctx.lineTo(x + 9, y + 8); ctx.lineTo(x - 9, y + 8); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#3e2723'; ctx.fillRect(x - 11, y + 8, 22, 3);
+    } else if (outfit === 'hood') {
+      // hooded shirt: hood rises behind/over head
+      ctx.fillStyle = cloth;
+      ctx.beginPath(); ctx.moveTo(x - 11, y - 2); ctx.lineTo(x + 11, y - 2); ctx.lineTo(x + 9, y + 12); ctx.lineTo(x - 9, y + 12); ctx.closePath(); ctx.fill();
+      // hood mantle drawn at neck/shoulder line
+      ctx.fillStyle = shadeColor(cloth, -0.25);
+      ctx.beginPath(); ctx.moveTo(x - 12, y - 3); ctx.quadraticCurveTo(x, y + 4, x + 12, y - 3); ctx.lineTo(x + 12, y + 1); ctx.quadraticCurveTo(x, y + 8, x - 12, y + 1); ctx.closePath(); ctx.fill();
+    } else if (outfit === 'noble') {
+      // elegant doublet with collar trim and ornate band
+      ctx.fillStyle = cloth;
+      ctx.beginPath(); ctx.moveTo(x - 11, y - 2); ctx.lineTo(x + 11, y - 2); ctx.lineTo(x + 10, y + 13); ctx.lineTo(x - 10, y + 13); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#ffd54f';
+      ctx.fillRect(x - 1, y - 2, 2, 14);
+      for (let i = 0; i < 3; i++) { ctx.beginPath(); ctx.arc(x, y + i * 4, 1, 0, Math.PI * 2); ctx.fill(); }
+      ctx.fillStyle = shadeColor(cloth, 0.3);
+      ctx.beginPath(); ctx.moveTo(x - 12, y - 3); ctx.lineTo(x - 8, y - 3); ctx.lineTo(x - 10, y + 1); ctx.closePath(); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(x + 12, y - 3); ctx.lineTo(x + 8, y - 3); ctx.lineTo(x + 10, y + 1); ctx.closePath(); ctx.fill();
+    } else if (outfit === 'rags') {
+      // torn jagged hem
+      ctx.fillStyle = cloth;
+      ctx.beginPath();
+      ctx.moveTo(x - 11, y - 2); ctx.lineTo(x + 11, y - 2);
+      const points = [12, 6, 10, 5, 11, 3, 12, 4, 11];
+      for (let i = 0; i < points.length; i++) {
+        const px = x + 11 - i * 22 / (points.length - 1);
+        ctx.lineTo(px, y + points[i]);
+      }
+      ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = clothDark; ctx.lineWidth = 0.8;
+      ctx.beginPath(); ctx.moveTo(x - 5, y + 1); ctx.lineTo(x + 3, y + 7); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x + 4, y); ctx.lineTo(x + 8, y + 6); ctx.stroke();
+      ctx.lineWidth = 1;
+    } else if (outfit === 'warden') {
+      // heavy guard tunic with crossed straps and emblem
+      ctx.fillStyle = cloth;
+      ctx.fillRect(x - 11, y - 2, 22, 14);
+      ctx.strokeStyle = '#3e2723'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(x - 11, y - 1); ctx.lineTo(x + 11, y + 10); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x + 11, y - 1); ctx.lineTo(x - 11, y + 10); ctx.stroke();
+      ctx.lineWidth = 1;
+      ctx.fillStyle = '#ffd54f'; ctx.beginPath(); ctx.arc(x, y + 4, 2, 0, Math.PI * 2); ctx.fill();
     } else {
       // tunic (default trapezoid)
       ctx.beginPath();
@@ -3983,38 +4410,134 @@ function KrezcentQuest() {
     ctx.beginPath(); ctx.arc(x, y - 10, 10, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = c.hair;
     const hs = c.hairstyle || 'short';
-    if (hs === 'short') { ctx.beginPath(); ctx.arc(x, y - 12, 11, Math.PI, Math.PI * 2); ctx.fill(); }
+    const hairDark = shadeColor(c.hair, -0.35);
+    const hairLight = shadeColor(c.hair, 0.20);
+    if (hs === 'short') {
+      // rounded cap with a subtle highlight on top
+      ctx.beginPath(); ctx.arc(x, y - 12, 11.5, Math.PI * 0.95, Math.PI * 2.05); ctx.fill();
+      ctx.fillStyle = hairLight; ctx.beginPath(); ctx.arc(x - 3, y - 17, 4, Math.PI, Math.PI * 1.7); ctx.fill();
+    }
     else if (hs === 'long') {
-      ctx.beginPath(); ctx.ellipse(x, y - 8, 12, 14, 0, 0, Math.PI * 2); ctx.fill();
+      // long flowing — wide shape with strands down the sides
+      ctx.beginPath(); ctx.ellipse(x, y - 8, 13, 16, 0, 0, Math.PI * 2); ctx.fill();
       ctx.fillStyle = c.skin; ctx.beginPath(); ctx.arc(x, y - 10, 9, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = c.hair; ctx.beginPath(); ctx.arc(x, y - 14, 11, Math.PI * 0.95, Math.PI * 2.05); ctx.fill();
-    } else if (hs === 'spiky') {
-      for (let i = -2; i <= 2; i++) {
+      ctx.fillStyle = c.hair; ctx.beginPath(); ctx.arc(x, y - 14, 11.5, Math.PI * 0.95, Math.PI * 2.05); ctx.fill();
+      ctx.fillStyle = hairDark;
+      ctx.beginPath(); ctx.ellipse(x - 11, y + 1, 2, 8, 0.2, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(x + 11, y + 1, 2, 8, -0.2, 0, Math.PI * 2); ctx.fill();
+    }
+    else if (hs === 'spiky') {
+      // jagged spikes instead of perfectly triangular
+      ctx.beginPath(); ctx.arc(x, y - 12, 11, Math.PI, Math.PI * 2); ctx.fill();
+      const heights = [7, 10, 11, 10, 7];
+      for (let i = 0; i < 5; i++) {
+        const cx = x + (i - 2) * 4;
         ctx.beginPath();
-        ctx.moveTo(x + i * 3.5 - 1.5, y - 14);
-        ctx.lineTo(x + i * 3.5, y - 22);
-        ctx.lineTo(x + i * 3.5 + 1.5, y - 14);
+        ctx.moveTo(cx - 2.5, y - 14);
+        ctx.lineTo(cx - 0.5, y - 14 - heights[i]);
+        ctx.lineTo(cx + 1, y - 14 - heights[i] + 2);
+        ctx.lineTo(cx + 2.5, y - 14);
         ctx.closePath(); ctx.fill();
       }
-      ctx.beginPath(); ctx.arc(x, y - 12, 11, Math.PI, Math.PI * 2); ctx.fill();
-    } else if (hs === 'mohawk') {
-      ctx.beginPath(); ctx.arc(x, y - 12, 11, Math.PI, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = hairLight;
+      ctx.beginPath(); ctx.moveTo(x - 4, y - 14); ctx.lineTo(x - 2.5, y - 22); ctx.lineTo(x - 1, y - 14); ctx.closePath(); ctx.fill();
+    }
+    else if (hs === 'mohawk') {
+      // shaved sides + tall ridge
+      ctx.fillStyle = shadeColor(c.skin, -0.05); ctx.beginPath(); ctx.arc(x, y - 12, 11, Math.PI, Math.PI * 2); ctx.fill();
       ctx.fillStyle = c.hair;
-      ctx.beginPath(); ctx.moveTo(x - 2, y - 14); ctx.lineTo(x, y - 26); ctx.lineTo(x + 2, y - 14); ctx.closePath(); ctx.fill();
-      ctx.fillRect(x - 2, y - 20, 4, 8);
-    } else if (hs === 'ponytail') {
+      ctx.beginPath(); ctx.moveTo(x - 3, y - 14); ctx.lineTo(x - 1, y - 26); ctx.lineTo(x + 1, y - 26); ctx.lineTo(x + 3, y - 14); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = hairLight; ctx.fillRect(x - 1.5, y - 24, 1, 10);
+    }
+    else if (hs === 'ponytail') {
+      ctx.beginPath(); ctx.arc(x, y - 12, 11.5, Math.PI * 0.95, Math.PI * 2.05); ctx.fill();
+      // longer tail with a band
+      ctx.fillStyle = c.hair;
+      ctx.beginPath(); ctx.ellipse(x - 13, y - 2, 4, 15, 0.5, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = hairDark; ctx.beginPath(); ctx.ellipse(x - 11, y - 10, 3, 2, 0, 0, Math.PI * 2); ctx.fill();
+    }
+    else if (hs === 'bun') {
+      ctx.beginPath(); ctx.arc(x, y - 12, 11.5, Math.PI * 0.95, Math.PI * 2.05); ctx.fill();
+      // bun with wrap detail
+      ctx.beginPath(); ctx.arc(x, y - 23, 6, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = hairDark; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(x, y - 23, 5, 0, Math.PI * 2); ctx.stroke();
+    }
+    else if (hs === 'curly') {
+      // overlapping curl bumps for a fuller look
+      ctx.beginPath(); ctx.arc(x, y - 12, 11.5, Math.PI * 0.95, Math.PI * 2.05); ctx.fill();
+      const curls = [[-8,-18,5],[-3,-21,6],[3,-21,6],[8,-18,5],[-9,-14,4],[9,-14,4]];
+      for (const [cx, cy, r] of curls) { ctx.beginPath(); ctx.arc(x + cx, y + cy, r, 0, Math.PI * 2); ctx.fill(); }
+      ctx.fillStyle = hairLight; ctx.beginPath(); ctx.arc(x - 3, y - 21, 1.5, 0, Math.PI * 2); ctx.fill();
+    }
+    else if (hs === 'bald') {
+      // subtle scalp highlight so it doesn't look bald-by-accident
+      ctx.fillStyle = shadeColor(c.skin, 0.08);
+      ctx.beginPath(); ctx.arc(x - 3, y - 15, 3, 0, Math.PI * 2); ctx.fill();
+    }
+    // --- NEW STYLES (Update 13) ---
+    else if (hs === 'wavy') {
+      // wavy hair: scalloped edges
+      ctx.beginPath();
+      ctx.moveTo(x - 12, y - 8);
+      for (let i = 0; i < 6; i++) ctx.quadraticCurveTo(x - 10 + i * 4, y - 22 - (i % 2) * 3, x - 8 + i * 4, y - 8);
+      ctx.closePath(); ctx.fill();
+      ctx.fillStyle = hairLight; ctx.beginPath(); ctx.arc(x - 5, y - 17, 2, 0, Math.PI * 2); ctx.fill();
+    }
+    else if (hs === 'braided') {
+      ctx.beginPath(); ctx.arc(x, y - 12, 11.5, Math.PI * 0.95, Math.PI * 2.05); ctx.fill();
+      // a single braid down the back
+      ctx.fillStyle = c.hair;
+      for (let i = 0; i < 4; i++) {
+        ctx.beginPath(); ctx.ellipse(x + 12, y - 6 + i * 6, 3.5, 3.5, 0, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.fillStyle = hairDark;
+      for (let i = 0; i < 3; i++) { ctx.fillRect(x + 9, y - 3 + i * 6, 6, 0.8); }
+    }
+    else if (hs === 'undercut') {
+      // shaved sides, fuller top
+      ctx.fillStyle = shadeColor(c.skin, -0.06); ctx.beginPath(); ctx.arc(x, y - 12, 11, Math.PI, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = c.hair;
+      ctx.beginPath();
+      ctx.moveTo(x - 9, y - 15); ctx.quadraticCurveTo(x - 4, y - 23, x + 2, y - 22);
+      ctx.quadraticCurveTo(x + 9, y - 20, x + 10, y - 12); ctx.lineTo(x - 9, y - 12); ctx.closePath(); ctx.fill();
+    }
+    else if (hs === 'dreadlocks') {
+      ctx.beginPath(); ctx.arc(x, y - 12, 11.5, Math.PI * 0.95, Math.PI * 2.05); ctx.fill();
+      // hanging locks
+      ctx.fillStyle = c.hair;
+      for (let i = 0; i < 5; i++) {
+        const lx = x - 10 + i * 5;
+        ctx.fillRect(lx - 1, y - 12, 2.5, 14);
+        ctx.beginPath(); ctx.arc(lx + 0.25, y + 2, 1.6, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+    else if (hs === 'topknot') {
+      // shaved sides, knot on top
+      ctx.fillStyle = shadeColor(c.skin, -0.05); ctx.beginPath(); ctx.arc(x, y - 12, 11, Math.PI, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = c.hair;
+      ctx.fillRect(x - 2, y - 22, 4, 8);
+      ctx.beginPath(); ctx.arc(x, y - 24, 5, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = hairDark; ctx.fillRect(x - 3, y - 20, 6, 1.2);
+    }
+    else if (hs === 'sidecut') {
+      // hair swept to one side
+      ctx.beginPath();
+      ctx.moveTo(x - 12, y - 12); ctx.lineTo(x - 11, y - 19);
+      ctx.quadraticCurveTo(x, y - 26, x + 12, y - 16);
+      ctx.lineTo(x + 12, y - 12); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = hairLight;
+      ctx.beginPath();
+      ctx.moveTo(x - 8, y - 15); ctx.lineTo(x + 4, y - 22); ctx.lineTo(x + 6, y - 20); ctx.lineTo(x - 6, y - 13); ctx.closePath(); ctx.fill();
+    }
+    else if (hs === 'pompadour') {
+      // tall front sweep, shorter back
       ctx.beginPath(); ctx.arc(x, y - 12, 11, Math.PI, Math.PI * 2); ctx.fill();
-      // tail out the back
-      ctx.beginPath(); ctx.ellipse(x - 12, y - 4, 4, 12, 0.4, 0, Math.PI * 2); ctx.fill();
-    } else if (hs === 'bun') {
-      ctx.beginPath(); ctx.arc(x, y - 12, 11, Math.PI, Math.PI * 2); ctx.fill();
-      ctx.beginPath(); ctx.arc(x, y - 22, 5, 0, Math.PI * 2); ctx.fill();
-    } else if (hs === 'curly') {
-      for (let i = -2; i <= 2; i++) ctx.beginPath(), ctx.arc(x + i * 5, y - 16, 5, 0, Math.PI * 2), ctx.fill();
-      ctx.beginPath(); ctx.arc(x, y - 12, 11, Math.PI, Math.PI * 2); ctx.fill();
-    } else if (hs === 'bald') {
-      // no hair
-    } else { ctx.beginPath(); ctx.arc(x, y - 12, 11, Math.PI, Math.PI * 2); ctx.fill(); }
+      ctx.beginPath();
+      ctx.moveTo(x - 8, y - 14); ctx.quadraticCurveTo(x - 6, y - 24, x + 2, y - 22);
+      ctx.quadraticCurveTo(x + 8, y - 20, x + 6, y - 14); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = hairLight; ctx.beginPath(); ctx.arc(x - 2, y - 20, 1.5, 0, Math.PI * 2); ctx.fill();
+    }
+    else { ctx.beginPath(); ctx.arc(x, y - 12, 11.5, Math.PI * 0.95, Math.PI * 2.05); ctx.fill(); }
     const eyeOff = Math.cos(p.dir) * 1.2;
     const eyeOffY = Math.sin(p.dir) * 0.8;
     ctx.fillStyle = '#fff';
@@ -4038,6 +4561,25 @@ function KrezcentQuest() {
       ctx.beginPath();
     } else if (expr === 'surprised') { ctx.arc(x, y - 5, 2, 0, Math.PI * 2); }
     else if (expr === 'smug') { ctx.moveTo(x - 3, y - 5); ctx.quadraticCurveTo(x, y - 3, x + 4, y - 6); }
+    else if (expr === 'sad') {
+      // downturned mouth + drooping brows
+      ctx.moveTo(x - 3, y - 4); ctx.quadraticCurveTo(x, y - 7, x + 3, y - 4);
+      ctx.moveTo(x - 6, y - 12); ctx.lineTo(x - 2, y - 13);
+      ctx.moveTo(x + 6, y - 12); ctx.lineTo(x + 2, y - 13);
+    }
+    else if (expr === 'focused') {
+      // tight straight mouth + lowered brows
+      ctx.moveTo(x - 2, y - 5); ctx.lineTo(x + 2, y - 5);
+      ctx.moveTo(x - 6, y - 13); ctx.lineTo(x - 1, y - 13);
+      ctx.moveTo(x + 6, y - 13); ctx.lineTo(x + 1, y - 13);
+    }
+    else if (expr === 'grin') {
+      // wide toothy grin
+      ctx.arc(x, y - 5, 3.5, 0.05 * Math.PI, 0.95 * Math.PI);
+      ctx.stroke();
+      ctx.fillStyle = '#fff'; ctx.fillRect(x - 2.5, y - 5, 5, 1.5);
+      ctx.beginPath();
+    }
     else { ctx.moveTo(x - 3, y - 5); ctx.lineTo(x + 3, y - 5); } // neutral
     ctx.stroke(); ctx.lineWidth = 1;
     drawWeapon(ctx, x, y, p.dir, c.weapon);
@@ -4496,13 +5038,34 @@ function KrezcentQuest() {
       setRolledAffs(rollCharacterAffinities());
       setAffSpins(s => s + 1);
     }
-    const hairOptions = ['#3b2316','#000000','#6d4c41','#f9d71c','#c1440e','#ffffff','#9c27b0','#03a9f4','#e91e63','#4caf50','#ff5722','#90a4ae','#7e57c2','#00bcd4'];
-    const eyeOptions = ['#2196f3','#4caf50','#795548','#ff9800','#9c27b0','#f44336','#00bcd4','#ffc107','#e91e63','#607d8b'];
-    const skinOptions = ['#f4c2a1','#deb887','#c68642','#a08060','#8d5524','#5d3924','#fadbb5','#ffe0bd','#3b2219','#e8b89b'];
-    const hairstyles = ['short','long','spiky','mohawk','ponytail','bun','curly','bald'];
-    const expressions = ['neutral','happy','angry','cool','surprised','smug'];
-    const outfits = ['tunic','robe','armor','cloak','vest'];
-    const clothOptions = ['#5b21b6','#1565c0','#2e7d32','#c62828','#f9a825','#37474f','#6d4c41','#ad1457','#00838f','#ffffff','#212121','#ef6c00'];
+    // Update 13: expanded color palettes and styles for richer customization.
+    const hairOptions = [
+      // Natural shades
+      '#1a0e08','#3b2316','#5d3a1a','#6d4c41','#8b6f47','#a67c52','#c9a47a','#e0c39a','#f4e6c8',
+      // Bold
+      '#000000','#ffffff','#9e9e9e','#f9d71c','#ffeb3b','#c1440e','#e64a19','#ff5722','#d32f2f',
+      // Fantasy
+      '#e91e63','#ec407a','#ab47bc','#9c27b0','#7e57c2','#5e35b1','#3949ab','#1976d2','#03a9f4','#00bcd4','#26a69a','#388e3c','#4caf50','#cddc39','#fdd835','#ff9800','#bf360c','#4a148c','#311b92','#01579b','#004d40',
+    ];
+    const eyeOptions = [
+      '#1976d2','#2196f3','#03a9f4','#00bcd4','#26a69a','#388e3c','#4caf50','#8bc34a','#cddc39','#fdd835','#ff9800','#ff5722','#d32f2f','#e91e63','#ab47bc','#9c27b0','#7e57c2','#5e35b1','#795548','#5d4037','#607d8b','#37474f','#212121','#9e9e9e','#ffffff','#b71c1c','#ffd54f','#a1887f','#ffeb3b','#80cbc4'
+    ];
+    const skinOptions = [
+      '#fdebd0','#ffe0bd','#fadbb5','#f4c2a1','#e8b89b','#deb887','#d2a36a','#c68642','#b88455','#a78060','#a08060','#8d6e63','#8d5524','#6e4c2f','#5d3924','#4e342e','#3b2219','#291607',
+      // fantasy tones
+      '#b4d4e3','#c6b8d6','#d4a5a5','#9ec5a8'
+    ];
+    const hairstyles = ['short','long','spiky','mohawk','ponytail','bun','curly','bald','wavy','braided','undercut','dreadlocks','topknot','sidecut','pompadour'];
+    const expressions = ['neutral','happy','angry','cool','surprised','smug','sad','focused','grin'];
+    const outfits = ['tunic','robe','armor','cloak','vest','jerkin','hood','noble','rags','warden'];
+    const clothOptions = [
+      // jewel tones
+      '#5b21b6','#1565c0','#1976d2','#0277bd','#2e7d32','#388e3c','#558b2f','#827717','#f9a825','#ff8f00','#e65100','#bf360c','#c62828','#b71c1c','#880e4f','#ad1457','#6a1b9a','#4a148c','#311b92','#1a237e','#0d47a1','#004d40','#1b5e20','#33691e','#3e2723','#212121','#37474f','#263238','#37474f',
+      // muted & neutral
+      '#6d4c41','#8d6e63','#a1887f','#bcaaa4','#d7ccc8','#90a4ae','#b0bec5','#cfd8dc','#ffffff','#212121','#5d4037','#4e342e',
+      // accents
+      '#00838f','#00acc1','#ef6c00','#fb8c00','#ffd54f','#fdd835','#9c27b0','#7b1fa2','#aa00ff','#d500f9'
+    ];
     return (
       <div className="h-full overflow-auto p-6" style={{ background: 'radial-gradient(ellipse at center, #2d1b4e 0%, #1a0f24 70%, #000 100%)', color: 'white' }}>
         <div className="max-w-5xl mx-auto">
@@ -5162,7 +5725,10 @@ function KrezcentQuest() {
 
   function ShopModal() {
     const tab = shopTab; const setTab = setShopTab;
-    const buyItems = Object.entries(ITEMS).filter(([k, v]) => v.shopSells);
+    // Sort by grade (S→F, rarest on top) then by price (most expensive first within a grade).
+    const GRADE_ORDER = { S: 0, A: 1, B: 2, C: 3, D: 4, E: 5, F: 6 };
+    const buyItems = Object.entries(ITEMS).filter(([k, v]) => v.shopSells)
+      .sort((a, b) => (GRADE_ORDER[a[1].g] - GRADE_ORDER[b[1].g]) || (b[1].price - a[1].price));
     return (
       <ModalBox title="Krezcent Bazaar" onClose={() => setModal(null)}>
         <div className="flex gap-2 mb-3">
@@ -5290,7 +5856,6 @@ function KrezcentQuest() {
 
   function BlacksmithModal() {
     const c = char;
-    const [bsTab, setBsTab] = useState('weapons');
     return (
       <ModalBox title="Blacksmith" onClose={() => setModal(null)}>
         <div className="text-yellow-400 mb-3">🪙 {c.coins} coins</div>
@@ -5313,7 +5878,7 @@ function KrezcentQuest() {
         <div className="text-purple-300 font-bold mb-2">Your Collection</div>
         <div className="text-xs text-slate-400 mb-2">Upgrade weapons up to level {MAX_WEAPON_LEVEL}. Each level multiplies damage; stronger weapons cost far more to level.</div>
         <div className="grid grid-cols-2 gap-2 mb-4">
-          {(c.ownedWeapons || []).map(wk => {
+          {(c.ownedWeapons || []).slice().sort((a, b) => weaponDamageAt(b, 1) - weaponDamageAt(a, 1)).map(wk => {
             const w = WEAPONS[wk]; if (!w) return null;
             const equipped = c.weapon === wk;
             const lvl = (c.weaponLevels && c.weaponLevels[wk]) || 1;
@@ -5361,7 +5926,7 @@ function KrezcentQuest() {
         </div>
         <div className="text-purple-300 font-bold mb-2">Buy from the Forge</div>
         <div className="grid grid-cols-2 gap-2">
-          {WEAPON_SHOP.map(s => {
+          {WEAPON_SHOP.slice().sort((a, b) => (WEAPONS[b.key]?.price || 0) - (WEAPONS[a.key]?.price || 0)).map(s => {
             const w = WEAPONS[s.key]; if (!w) return null;
             const owned = (c.ownedWeapons || []).includes(s.key);
             return (
@@ -5401,7 +5966,7 @@ function KrezcentQuest() {
           <div className="text-xs text-slate-500 mb-3 italic">You own no armor yet. Buy some from the forge below or find it (rarely) in the dungeon.</div>
         )}
         <div className="grid grid-cols-2 gap-2 mb-4">
-          {(c.ownedArmors || []).map(ak => {
+          {(c.ownedArmors || []).slice().sort((a, b) => (ARMORS[b]?.price || 0) - (ARMORS[a]?.price || 0)).map(ak => {
             const a = ARMORS[ak]; if (!a) return null;
             const equipped = c.armor === ak;
             const lvl = (c.armorLevels && c.armorLevels[ak]) || 1;
@@ -5447,7 +6012,7 @@ function KrezcentQuest() {
         </div>
         <div className="text-purple-300 font-bold mb-2">Buy from the Forge</div>
         <div className="grid grid-cols-2 gap-2">
-          {ARMOR_SHOP.map(s => {
+          {ARMOR_SHOP.slice().sort((a, b) => (ARMORS[b.key]?.price || 0) - (ARMORS[a.key]?.price || 0)).map(s => {
             const a = ARMORS[s.key]; if (!a) return null;
             const owned = (c.ownedArmors || []).includes(s.key);
             return (

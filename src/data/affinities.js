@@ -32,6 +32,7 @@ export const ABILITIES = {
     { lvl: 60,  n: 'Phoenix Strike', d: 285, m: 70,  k: 'melee', cd: 0.8 },
     { lvl: 70,  n: 'Meteor',         d: 360, m: 85,  k: 'slam', cd: 2.3 },
     { lvl: 80,  n: 'Sunbreaker',     d: 460, m: 100, k: 'nova', cd: 2 },
+    { lvl: 90, n: 'Ember Serpent',     d: 540, m: 110, k: 'homing_snake', cd: 1.6 },
     { lvl: 100, n: 'Ragnarok',       d: 680, m: 130, k: 'ultimate', cd: 14.4 },
   ],
   Water: [
@@ -44,6 +45,7 @@ export const ABILITIES = {
     { lvl: 60,  n: 'Deluge',         d: 280, m: 70,  k: 'nova', cd: 1.9 },
     { lvl: 70,  n: 'Maelstrom',      d: 355, m: 85,  k: 'orbit', cd: 3.1 },
     { lvl: 80,  n: 'Leviathan',      d: 455, m: 100, k: 'pierce_line', cd: 1.6 },
+    { lvl: 90, n: 'Frostbite Lantern', d: 520, m: 110, k: 'frost_lantern', cd: 2.2 },
     { lvl: 100, n: 'Drown the World', d: 670, m: 130, k: 'ultimate', cd: 14.4 },
   ],
   Earth: [
@@ -56,6 +58,7 @@ export const ABILITIES = {
     { lvl: 60,  n: 'Spire Crush',    d: 290, m: 72,  k: 'slam', cd: 2.2 },
     { lvl: 70,  n: 'Tectonic Slam',  d: 365, m: 88,  k: 'slam', cd: 2.3 },
     { lvl: 80,  n: 'Mountain Drop',  d: 470, m: 105, k: 'slam', cd: 2.4 },
+    { lvl: 90, n: 'Crystal Bloom',     d: 560, m: 115, k: 'crystal_bloom', cd: 2.0 },
     { lvl: 100, n: 'World Crusher',  d: 690, m: 132, k: 'ultimate', cd: 14.4 },
   ],
   Air: [
@@ -68,6 +71,7 @@ export const ABILITIES = {
     { lvl: 60,  n: 'Hurricane',      d: 278, m: 70,  k: 'orbit', cd: 3 },
     { lvl: 70,  n: 'Sky Sunder',     d: 350, m: 85,  k: 'cone', cd: 1.5 },
     { lvl: 80,  n: 'Apocalypse Gust', d: 450, m: 100, k: 'nova', cd: 2 },
+    { lvl: 90, n: 'Tempest Wheel',     d: 510, m: 110, k: 'lightning_wheel', cd: 1.8 },
     { lvl: 100, n: 'Heavens Wrath',  d: 665, m: 130, k: 'ultimate', cd: 14.4 },
   ],
   // Light & Darkness ~1.15x the baseline
@@ -81,6 +85,7 @@ export const ABILITIES = {
     { lvl: 60,  n: 'Judgment',       d: 330, m: 80,  k: 'slam', cd: 2.2 },
     { lvl: 70,  n: 'Pillar of Dawn', d: 415, m: 97,  k: 'beam', cd: 1.9 },
     { lvl: 80,  n: 'Ascension',      d: 530, m: 115, k: 'nova', cd: 2 },
+    { lvl: 90, n: 'Celestial Prism',   d: 530, m: 115, k: 'prism_beams', cd: 2.4 },
     { lvl: 100, n: 'Genesis',        d: 780, m: 150, k: 'ultimate', cd: 14.4 },
   ],
   Darkness: [
@@ -93,6 +98,8 @@ export const ABILITIES = {
     { lvl: 60,  n: 'Black Hole',     d: 330, m: 80,  k: 'orbit', cd: 3 },
     { lvl: 70,  n: 'Shadow Tomb',    d: 415, m: 97,  k: 'dot_field', cd: 3.4 },
     { lvl: 80,  n: 'Eternal Night',  d: 530, m: 115, k: 'nova', cd: 2 },
+    { lvl: 85, n: 'Echo Rift',         d: 500, m: 105, k: 'echo_rift', cd: 2.4 },
+    { lvl: 90, n: 'Bloodmoon Fang',    d: 580, m: 115, k: 'marked_snap', cd: 1.5 },
     { lvl: 100, n: 'Oblivion',       d: 780, m: 150, k: 'ultimate', cd: 14.4 },
   ],
 };
@@ -110,6 +117,7 @@ export const SUB_ABILITIES = {
     { lvl: 60,  n: 'Volcanic Surge',   d: 355, m: 88,  k: 'cone', cd: 1.5 },
     { lvl: 70,  n: 'Caldera',          d: 450, m: 108, k: 'dot_field', cd: 3.4 },
     { lvl: 80,  n: 'Volcano',          d: 575, m: 128, k: 'ultimate', cd: 11.9 },
+    { lvl: 90, n: 'Starfall Spear',    d: 560, m: 115, k: 'starfall', cd: 2.0 },
     { lvl: 100, n: 'Heart of Magma',   d: 850, m: 165, k: 'ultimate', cd: 14.4 },
   ],
   Lightning: [
@@ -122,6 +130,7 @@ export const SUB_ABILITIES = {
     { lvl: 60,  n: 'Storm Lord',       d: 360, m: 88,  k: 'chain', cd: 2.2 },
     { lvl: 70,  n: 'Lightning Spear',  d: 458, m: 108, k: 'beam', cd: 1.9 },
     { lvl: 80,  n: 'Heavenly Shock',   d: 585, m: 128, k: 'ultimate', cd: 11.9 },
+    { lvl: 90, n: 'Tempest Wheel',     d: 510, m: 110, k: 'lightning_wheel', cd: 1.8 },
     { lvl: 100, n: 'Zeus Descends',    d: 860, m: 165, k: 'ultimate', cd: 14.4 },
   ],
   Blood: [
@@ -134,6 +143,7 @@ export const SUB_ABILITIES = {
     { lvl: 60,  n: 'Crimson Tide',     d: 350, m: 90,  k: 'orbit', cd: 3 },
     { lvl: 70,  n: 'Vein Render',      d: 448, m: 110, k: 'melee', cd: 0.8 },
     { lvl: 80,  n: 'Exsanguinate',     d: 575, m: 130, k: 'ultimate', cd: 11.9 },
+    { lvl: 90, n: 'Lunar Chains',      d: 530, m: 110, k: 'binding_chain', cd: 1.6 },
     { lvl: 100, n: 'Blood Moon',       d: 845, m: 167, k: 'ultimate', cd: 14.4 },
   ],
   Ice: [
@@ -146,6 +156,7 @@ export const SUB_ABILITIES = {
     { lvl: 60,  n: 'Avalanche',        d: 352, m: 90,  k: 'barrage', cd: 2.6 },
     { lvl: 70,  n: 'Permafrost',       d: 448, m: 108, k: 'dot_field', cd: 3.4 },
     { lvl: 80,  n: 'Eternal Winter',   d: 575, m: 130, k: 'ultimate', cd: 11.9 },
+    { lvl: 90, n: 'Frostbite Lantern', d: 520, m: 110, k: 'frost_lantern', cd: 2.2 },
     { lvl: 100, n: 'Absolute Zero',    d: 850, m: 167, k: 'ultimate', cd: 14.4 },
   ],
   Metal: [
@@ -158,6 +169,7 @@ export const SUB_ABILITIES = {
     { lvl: 60,  n: 'Iron Sovereign',   d: 350, m: 90,  k: 'melee', cd: 0.8 },
     { lvl: 70,  n: 'Steel Hailstorm',  d: 448, m: 108, k: 'barrage', cd: 2.7 },
     { lvl: 80,  n: 'Adamant Eruption', d: 575, m: 130, k: 'ultimate', cd: 11.9 },
+    { lvl: 90, n: 'Arcane Pinball',    d: 520, m: 110, k: 'pinball_orb', cd: 1.6 },
     { lvl: 100, n: 'Iron Apocalypse',  d: 850, m: 167, k: 'ultimate', cd: 14.4 },
   ],
   Nature: [
@@ -170,6 +182,7 @@ export const SUB_ABILITIES = {
     { lvl: 60,  n: 'Verdant Genesis',  d: 352, m: 90,  k: 'heal', cd: 5.2 },
     { lvl: 70,  n: 'Forest Wrath',     d: 448, m: 108, k: 'orbit', cd: 3.1 },
     { lvl: 80,  n: "Gaia's Grasp",     d: 575, m: 130, k: 'ultimate', cd: 11.9 },
+    { lvl: 90, n: 'Thornstorm Waltz',  d: 540, m: 110, k: 'thornstorm', cd: 1.8 },
     { lvl: 100, n: 'Eden Bloom',       d: 850, m: 167, k: 'ultimate', cd: 14.4 },
   ],
   Weather: [
@@ -182,6 +195,7 @@ export const SUB_ABILITIES = {
     { lvl: 60,  n: 'Sky Sovereign',    d: 352, m: 90,  k: 'orbit', cd: 3 },
     { lvl: 70,  n: 'Tempest Eye',      d: 448, m: 108, k: 'orbit', cd: 3.1 },
     { lvl: 80,  n: 'Mother Storm',     d: 575, m: 130, k: 'ultimate', cd: 11.9 },
+    { lvl: 90, n: 'Mirage Collapse',   d: 540, m: 110, k: 'mirage_swarm', cd: 1.8 },
     { lvl: 100, n: 'Climate Collapse', d: 850, m: 167, k: 'ultimate', cd: 14.4 },
   ],
   'Poison Gas': [
@@ -194,6 +208,7 @@ export const SUB_ABILITIES = {
     { lvl: 60,  n: 'Endless Haze',     d: 352, m: 90,  k: 'dot_field', cd: 3.4 },
     { lvl: 70,  n: 'Necrotic Bloom',   d: 448, m: 108, k: 'nova', cd: 1.9 },
     { lvl: 80,  n: 'World Toxin',      d: 575, m: 130, k: 'ultimate', cd: 11.9 },
+    { lvl: 90, n: 'Phantom Parade',    d: 540, m: 110, k: 'phantom_line', cd: 1.4 },
     { lvl: 100, n: 'Final Plague',     d: 850, m: 167, k: 'ultimate', cd: 14.4 },
   ],
   // Time & Space — the top-tier sub-affinities. ~1.7x baseline.
@@ -207,6 +222,7 @@ export const SUB_ABILITIES = {
     { lvl: 60,  n: 'Time Collapse',    d: 490, m: 115, k: 'orbit', cd: 3 },
     { lvl: 70,  n: 'Chrono Break',     d: 625, m: 140, k: 'slam', cd: 2.3 },
     { lvl: 80,  n: 'Stopwatch',        d: 800, m: 168, k: 'ultimate', cd: 11.9 },
+    { lvl: 90, n: 'Chrono Detonation', d: 600, m: 120, k: 'chrono_mark', cd: 2.6 },
     { lvl: 100, n: 'End of Time',      d: 1180, m: 200, k: 'ultimate', cd: 14.4 },
   ],
   Space: [
@@ -219,6 +235,7 @@ export const SUB_ABILITIES = {
     { lvl: 60,  n: 'Void Step',        d: 490, m: 115, k: 'dash', cd: 2.2 },
     { lvl: 70,  n: 'Spatial Rend',     d: 625, m: 140, k: 'beam', cd: 1.9 },
     { lvl: 80,  n: 'Black Singularity', d: 800, m: 168, k: 'ultimate', cd: 11.9 },
+    { lvl: 90, n: 'Gravity Well',      d: 560, m: 115, k: 'gravity_well', cd: 2.4 },
     { lvl: 100, n: 'Cosmos Unmade',    d: 1180, m: 200, k: 'ultimate', cd: 14.4 },
   ],
 };
